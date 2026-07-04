@@ -8,7 +8,7 @@ app.use(cors())
 app.use(express.json())
 
 // ── DB connection ─────────────────────────────────────────────────
-const sql = postgres(process.env.DATABASE_URL, {
+const sql = postgres(process.env.POSTGRES_URL || process.env.DATABASE_URL, {
   ssl: 'require',
   prepare: false,   // required for Supabase transaction pooler
   max: 3,

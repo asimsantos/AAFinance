@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"node api/index.js\" \"vite\"",
+    "dev": "concurrently \"node server/index.js\" \"vite\"",
     "build": "vite build"
   },
   "dependencies": {
