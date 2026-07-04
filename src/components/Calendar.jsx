@@ -91,8 +91,8 @@ export default function Calendar({ year, month, ledger, selectedDay, onDayClick 
                 </div>
               </div>
 
-              {/* Row 2: event name labels (autocover hidden from cell, visible in day detail) */}
-              <div className="flex-1 flex flex-col gap-[2px] overflow-hidden">
+              {/* Row 2: event name labels — hidden on mobile, visible on sm+ */}
+              <div className="flex-1 hidden sm:flex flex-col gap-[2px] overflow-hidden">
                 {events.filter(e => e.type !== 'autocover' && e.type !== 'autocoverrepay').slice(0, 3).map((ev, j) => (
                   <div key={j}
                     className={`text-[8px] rounded-[3px] px-1 py-[1px] font-semibold truncate leading-tight flex-shrink-0
@@ -106,7 +106,7 @@ export default function Calendar({ year, month, ledger, selectedDay, onDayClick 
                   </div>
                 ))}
                 {events.filter(e => e.type !== 'autocover' && e.type !== 'autocoverrepay').length > 3 && (
-                  <span className="text-[7px] text-slate-400 pl-0.5">
+                  <span className="text-[7px] text-slate-400 pl-0.5 hidden sm:inline">
                     +{events.filter(e => e.type !== 'autocover' && e.type !== 'autocoverrepay').length - 3} more
                   </span>
                 )}
