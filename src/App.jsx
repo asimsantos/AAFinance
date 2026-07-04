@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import dayjs from 'dayjs'
 import { api } from './api'
 import { useLedger } from './hooks/useLedger'
@@ -55,6 +55,23 @@ export default function App() {
   const [fundModal,   setFundModal] = useState(null)
   const [mobileTab,   setMobileTab] = useState('today')
   const [drawerOpen,  setDrawerOpen] = useState(false)
+
+  const TAB_ORDER = ['today', 'calendar', 'manage']
+  const swipeRef  = useRef(null)
+
+  const handleTouchStart = e => {
+    swipeRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+  }
+  const handleTouchEnd = e => {
+    if (!swipeRef.current || drawerOpen) return
+    const dx = e.changedTouches[0].clientX - swipeRef.current.x
+    const dy = e.changedTouches[0].clientY - swipeRef.current.y
+    swipeRef.current = null
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return
+    const idx = TAB_ORDER.indexOf(mobileTab)
+    if (dx < 0 && idx < TAB_ORDER.length - 1) { setMobileTab(TAB_ORDER[idx + 1]); setDrawerOpen(false) }
+    else if (dx > 0 && idx > 0)               { setMobileTab(TAB_ORDER[idx - 1]); setDrawerOpen(false) }
+  }
 
   const { ledger, loading, reload } = useLedger(year, month)
   const loadLends = async () => setLends(await api.getLends())
@@ -265,10 +282,12 @@ export default function App() {
       {/* ══════════════════════════════════════════════════════════════
           MOBILE LAYOUT  (< md)
       ══════════════════════════════════════════════════════════════ */}
-      <div className="flex flex-col flex-1 overflow-hidden md:hidden">
+      <div className="flex-1 overflow-hidden md:hidden"
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}>
 
-        {/* Content area */}
-        <div className="flex-1 overflow-hidden relative">
+        {/* Content area — leaves room at bottom for the fixed nav */}
+        <div className="h-full overflow-hidden relative" style={{ paddingBottom: 'calc(56px + env(safe-area-inset-bottom))' }}>
 
           {/* ── Tab 1: TODAY ──────────────────────────────────────── */}
           {mobileTab === 'today' && (
@@ -299,23 +318,23 @@ export default function App() {
             </div>
           )}
         </div>
-
-        {/* ── Bottom navigation ─────────────────────────────────── */}
-        <nav className="flex-shrink-0 border-t border-slate-200 bg-white"
-          style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-          <div className="flex">
-            {MOBILE_TABS.map(t => (
-              <button key={t.key}
-                onClick={() => { setMobileTab(t.key); if (t.key !== 'calendar') setDrawerOpen(false) }}
-                className={`flex-1 flex flex-col items-center gap-0.5 py-2 transition-colors
-                  ${mobileTab === t.key ? 'text-emerald-700' : 'text-slate-400 hover:text-slate-600'}`}>
-                {t.icon}
-                <span className="text-[10px] font-semibold">{t.label}</span>
-              </button>
-            ))}
-          </div>
-        </nav>
       </div>
+
+      {/* ── Bottom navigation — fixed, always on top ──────────────── */}
+      <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white md:hidden"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex">
+          {MOBILE_TABS.map(t => (
+            <button key={t.key}
+              onClick={() => { setMobileTab(t.key); if (t.key !== 'calendar') setDrawerOpen(false) }}
+              className={`flex-1 flex flex-col items-center gap-0.5 py-2 transition-colors
+                ${mobileTab === t.key ? 'text-emerald-700' : 'text-slate-400 hover:text-slate-600'}`}>
+              {t.icon}
+              <span className="text-[10px] font-semibold">{t.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
 
       {/* ── Day-detail bottom drawer (mobile, calendar tab) ─────────
           Slides up over the calendar when a day is tapped.
