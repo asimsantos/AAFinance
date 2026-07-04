@@ -107,38 +107,60 @@ try { db.run("ALTER TABLE snapshots ADD COLUMN partial_funds TEXT DEFAULT ''") }
 try { db.run("ALTER TABLE snapshots ADD COLUMN reconciled INTEGER DEFAULT 0") } catch(e) {}
 try { db.run("ALTER TABLE debts ADD COLUMN paid_amt REAL DEFAULT 0") } catch(e) {}
 
-// ── SEED ────────────────────────────────────────────────────────
+// ── SEED (demo data — not real personal information) ─────────────
 const existing = get('SELECT COUNT(*) as c FROM rules')
 if (!existing || existing.c === 0) {
   const ruleStmt = `INSERT INTO rules(id,type,name,amt,start_date,end_date,recur,fund_target,person) VALUES(?,?,?,?,?,?,?,?,?)`
   const rules = [
-    ['r1','income','Asim salary',5050,'2026-06-15','','monthly','','Asim'],
-    ['r2','income','Ashmi Assetlink',1100,'2026-06-04','','fortnightly','','Ashmi'],
-    ['r3','income','Ashmi Dolce',550,'2026-06-11','','fortnightly','','Ashmi'],
-    ['r4','expense','Rent',450,'2026-06-07','','weekly','',''],
-    ['r5','expense','Groceries',250,'2026-06-03','','weekly','',''],
-    ['r6','expense','Transport',120,'2026-06-02','','weekly','',''],
-    ['r7','expense','Personal allowance',200,'2026-06-05','','weekly','',''],
-    ['r8','expense','Eat out',75,'2026-06-07','','weekly','',''],
-    ['r9','expense','Mobile/Insurance/Gym',150,'2026-06-16','','monthly','',''],
-    ['r10','expense','Shopping',300,'2026-06-10','','monthly','',''],
-    ['r11','fund','Debt repayment',2000,'2026-06-17','','monthly','debt',''],
-    ['r12','fund','Car fund transfer',1200,'2026-06-17','','monthly','car',''],
-    ['r13','fund','Tuition reserve',600,'2026-06-17','','monthly','home',''],
-    ['r14','fund','Emergency top-up',200,'2026-06-17','','monthly','emergency',''],
+    // Income
+    ['r1', 'income',  'Salary (Alex)',          4500, '2026-07-15', '',           'monthly',     '', 'Alex'],
+    ['r2', 'income',  'Salary (Sam)',            1100, '2026-07-07', '',           'fortnightly', '', 'Sam'],
+    ['r3', 'income',  'Freelance (Sam)',          400, '2026-07-14', '',           'fortnightly', '', 'Sam'],
+    // Expenses
+    ['r4', 'expense', 'Rent',                    480, '2026-07-05', '',           'weekly',      '', ''],
+    ['r5', 'expense', 'Groceries',               200, '2026-07-05', '',           'weekly',      '', ''],
+    ['r6', 'expense', 'Transport',                90, '2026-07-07', '',           'weekly',      '', ''],
+    ['r7', 'expense', 'Dining out',               70, '2026-07-05', '',           'weekly',      '', ''],
+    ['r8', 'expense', 'Personal spending',       130, '2026-07-07', '',           'weekly',      '', ''],
+    ['r9', 'expense', 'Phone & subscriptions',   120, '2026-07-10', '',           'monthly',     '', ''],
+    ['r10','expense', 'Clothing & household',    250, '2026-07-10', '',           'monthly',     '', ''],
+    // Fund transfers
+    ['r11','fund',    'Debt repayment',          1000, '2026-07-20', '',           'monthly', 'debt',      ''],
+    ['r12','fund',    'Car savings',              600, '2026-07-20', '',           'monthly', 'car',       ''],
+    ['r13','fund',    'Tuition reserve',          500, '2026-07-20', '',           'monthly', 'home',      ''],
+    ['r14','fund',    'Emergency top-up',         250, '2026-07-20', '',           'monthly', 'emergency', ''],
   ]
   rules.forEach(r => db.run(ruleStmt, r))
 
+  // Starting balances as of end of June
   db.run(`INSERT INTO snapshots(id,date,cash,car,emergency,debt,home) VALUES(?,?,?,?,?,?,?)`,
-    ['s1','2026-06-26',750,920,500,5500,0])
+    ['s1', '2026-06-30', 1200, 2800, 1500, 6400, 0])
+
+  // Outstanding lend
   db.run(`INSERT INTO lends(id,name,amt,given_date,return_date) VALUES(?,?,?,?,?)`,
-    ['l1','Jenny Di',1500,'2026-06-23',''])
-  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,['t1','income','Tax return',4500,'2026-08-15'])
-  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,['t2','expense','Tuition Sep 2026',4000,'2026-09-20'])
-  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,['t3','expense','Tuition Jan 2027',6000,'2027-01-20'])
-  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,['t4','expense','Tuition May 2027',6000,'2027-05-20'])
+    ['l1', 'Jordan', 600, '2026-07-01', '2026-09-01'])
+
+  // Outstanding debt (borrowed)
+  db.run(`INSERT INTO debts(id,name,amt,borrowed_date,due_date,note) VALUES(?,?,?,?,?,?)`,
+    ['d1', 'Parent loan', 2000, '2026-05-01', '2026-12-01', ''])
+  // Matching borrow transaction so the ledger reflects the debt
+  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,
+    ['t0', 'borrow', 'Parent loan', 2000, '2026-05-01'])
+
+  // Planned one-off transactions
+  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,
+    ['t1', 'income',  'Tax refund',           2800, '2026-08-20'])
+  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,
+    ['t2', 'expense', 'Annual insurance',      950, '2026-09-10'])
+  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,
+    ['t3', 'expense', 'Car registration',      720, '2026-10-15'])
+  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,
+    ['t4', 'expense', 'Tuition – Semester 1', 5500, '2026-09-20'])
+  db.run(`INSERT INTO transactions(id,type,name,amt,date) VALUES(?,?,?,?,?)`,
+    ['t5', 'expense', 'Tuition – Semester 2', 5500, '2027-02-20'])
+
   persist()
-  console.log('✅ Database seeded with default data')
+  console.log('✅ Database seeded with demo data')
 }
 
 // ── HELPERS ─────────────────────────────────────────────────────
