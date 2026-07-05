@@ -18,11 +18,10 @@ function uid() { return Math.random().toString(36).slice(2, 10) }
 
 // ── LEDGER ENGINE ────────────────────────────────────────────────
 async function computeLedger(from, to) {
-  const [rules, allTxns, snaps, debtsWithDueDate] = await Promise.all([
+  const [rules, allTxns, snaps] = await Promise.all([
     sql`SELECT * FROM rules`,
     sql`SELECT * FROM transactions`,
     sql`SELECT * FROM snapshots ORDER BY date`,
-    sql`SELECT * FROM debts WHERE due_date != '' AND repaid = 0`,
   ])
 
   const baseSnap = [...snaps].filter(s => s.date <= from)
@@ -63,7 +62,7 @@ async function computeLedger(from, to) {
 
   let cash = baseSnap.cash, car = baseSnap.car,
       emergency = baseSnap.emergency, debt = baseSnap.debt, home = baseSnap.home
-  let autocoverOwed = { emergency: 0, home: 0, car: 0 }
+  let autocoverOwed = { emergency: 0, debt: 0, home: 0, car: 0 }
 
   const ledger = {}
   const d   = new Date(loopFrom + 'T12:00:00')
@@ -81,7 +80,7 @@ async function computeLedger(from, to) {
       if (full || partial.includes('emergency')) emergency = daySnap.emergency
       if (full || partial.includes('debt'))      debt      = daySnap.debt
       if (full || partial.includes('home'))      home      = daySnap.home
-      if (full) autocoverOwed = { emergency: 0, home: 0, car: 0 }
+      if (full) autocoverOwed = { emergency: 0, debt: 0, home: 0, car: 0 }
     }
 
     const openCash = cash
@@ -100,46 +99,66 @@ async function computeLedger(from, to) {
           id: `rule_${rule.id}_${ds}`, rule_id: rule.id,
           type: rule.type, name: rule.name, amt: rule.amt,
           date: ds, fund_target: rule.fund_target,
+          source_fund: rule.source_fund || '',
           recur: rule.recur, source: 'rule',
         })
       }
     })
 
-    debtsWithDueDate.forEach(debtRecord => {
-      if (debtRecord.due_date === ds) {
-        const remaining = Math.max(0, debtRecord.amt - (debtRecord.paid_amt || 0))
-        if (remaining > 0) {
-          events.push({
-            id: `debtpay_${debtRecord.id}_${ds}`,
-            type: 'fund', name: `Auto-repay – ${debtRecord.name}`,
-            amt: remaining, fund_target: 'debt', date: ds, source: 'autopay',
-          })
-        }
-      }
-    })
-
     events.forEach(ev => {
-      if      (ev.type === 'income')  { cash += ev.amt }
-      else if (ev.type === 'expense') { cash -= ev.amt }
-      else if (ev.type === 'borrow')  { cash += ev.amt; debt += ev.amt }
-      else if (ev.type === 'fund') {
+      if (ev.type === 'income') {
+        cash += ev.amt
+      } else if (ev.type === 'expense') {
+        if (ev.source_fund) {
+          let remaining = ev.amt
+          const deductFrom = (key) => {
+            const bal = { car, emergency, debt, home }[key] || 0
+            const take = Math.min(bal, remaining)
+            if (take > 0) {
+              if (key === 'car')       car       -= take
+              if (key === 'emergency') emergency -= take
+              if (key === 'debt')      debt      -= take
+              if (key === 'home')      home      -= take
+              remaining -= take
+            }
+          }
+          deductFrom(ev.source_fund)
+          cash -= remaining
+        } else {
+          cash -= ev.amt
+        }
+      } else if (ev.type === 'borrow') {
+        cash += ev.amt
+      } else if (ev.type === 'fund') {
         cash -= ev.amt
         if      (ev.fund_target === 'car')       car += ev.amt
         else if (ev.fund_target === 'emergency') emergency += ev.amt
-        else if (ev.fund_target === 'debt')      debt = Math.max(0, debt - ev.amt)
+        else if (ev.fund_target === 'debt')      debt += ev.amt
         else if (ev.fund_target === 'home')      home += ev.amt
+      } else if (ev.type === 'lend') {
+        cash -= ev.amt
+      } else if (ev.type === 'debtpay') {
+        debt -= ev.amt
       }
-      else if (ev.type === 'lend') { cash -= ev.amt }
     })
 
     if (daySnap?.cash_pinned) cash = daySnap.cash
 
+    // Auto-cover: Emergency → Debt fund → Tuition reserve → Car fund
     if (cash < 0 && !daySnap?.cash_pinned) {
       const fromEmergency = Math.min(emergency, -cash)
       if (fromEmergency > 0) {
         emergency -= fromEmergency; cash += fromEmergency
         autocoverOwed.emergency += fromEmergency
         events.push({ id: `ac_em_${ds}`, type: 'autocover', name: 'Emergency fund', amt: fromEmergency, fund_target: 'emergency', date: ds, source: 'autocover' })
+      }
+      if (cash < 0) {
+        const fromDebt = Math.min(debt, -cash)
+        if (fromDebt > 0) {
+          debt -= fromDebt; cash += fromDebt
+          autocoverOwed.debt += fromDebt
+          events.push({ id: `ac_debt_${ds}`, type: 'autocover', name: 'Debt fund', amt: fromDebt, fund_target: 'debt', date: ds, source: 'autocover' })
+        }
       }
       if (cash < 0) {
         const fromHome = Math.min(home, -cash)
@@ -159,8 +178,9 @@ async function computeLedger(from, to) {
       }
     }
 
+    // Auto-cover repayment: Car → Tuition reserve → Debt fund → Emergency
     if (cash > 0 && !daySnap?.cash_pinned &&
-        (autocoverOwed.emergency > 0 || autocoverOwed.home > 0 || autocoverOwed.car > 0)) {
+        (autocoverOwed.emergency > 0 || autocoverOwed.debt > 0 || autocoverOwed.home > 0 || autocoverOwed.car > 0)) {
       const repayCar = Math.min(autocoverOwed.car, cash)
       if (repayCar > 0) {
         car += repayCar; cash -= repayCar; autocoverOwed.car -= repayCar
@@ -171,6 +191,13 @@ async function computeLedger(from, to) {
         if (repayHome > 0) {
           home += repayHome; cash -= repayHome; autocoverOwed.home -= repayHome
           events.push({ id: `acr_home_${ds}`, type: 'autocoverrepay', name: 'Tuition reserve', amt: repayHome, fund_target: 'home', date: ds, source: 'autocover' })
+        }
+      }
+      if (cash > 0) {
+        const repayDebt = Math.min(autocoverOwed.debt, cash)
+        if (repayDebt > 0) {
+          debt += repayDebt; cash -= repayDebt; autocoverOwed.debt -= repayDebt
+          events.push({ id: `acr_debt_${ds}`, type: 'autocoverrepay', name: 'Debt fund', amt: repayDebt, fund_target: 'debt', date: ds, source: 'autocover' })
         }
       }
       if (cash > 0) {
@@ -220,16 +247,16 @@ app.get('/api/rules', async (_, res) => {
   res.json(await sql`SELECT * FROM rules ORDER BY start_date`)
 })
 app.post('/api/rules', async (req, res) => {
-  const { type, name, amt, start_date, end_date, recur, fund_target, person } = req.body
+  const { type, name, amt, start_date, end_date, recur, fund_target, person, source_fund } = req.body
   const id = uid()
-  await sql`INSERT INTO rules(id,type,name,amt,start_date,end_date,recur,fund_target,person)
-    VALUES (${id},${type},${name},${amt},${start_date},${end_date||''},${recur},${fund_target||''},${person||''})`
+  await sql`INSERT INTO rules(id,type,name,amt,start_date,end_date,recur,fund_target,person,source_fund)
+    VALUES (${id},${type},${name},${amt},${start_date},${end_date||''},${recur},${fund_target||''},${person||''},${source_fund||''})`
   res.json({ id })
 })
 app.put('/api/rules/:id', async (req, res) => {
-  const { name, amt, start_date, end_date, recur, fund_target, person } = req.body
+  const { name, amt, start_date, end_date, recur, fund_target, person, source_fund } = req.body
   await sql`UPDATE rules SET name=${name},amt=${amt},start_date=${start_date},end_date=${end_date||''},
-    recur=${recur},fund_target=${fund_target||''},person=${person||''} WHERE id=${req.params.id}`
+    recur=${recur},fund_target=${fund_target||''},person=${person||''},source_fund=${source_fund||''} WHERE id=${req.params.id}`
   res.json({ ok: true })
 })
 app.delete('/api/rules/:id', async (req, res) => {
@@ -247,16 +274,16 @@ app.get('/api/transactions', async (req, res) => {
   res.json(rows)
 })
 app.post('/api/transactions', async (req, res) => {
-  const { type, name, amt, date, rule_id, skip, fund_target, return_date, note } = req.body
+  const { type, name, amt, date, rule_id, skip, fund_target, return_date, note, source_fund } = req.body
   const id = uid()
-  await sql`INSERT INTO transactions(id,type,name,amt,date,rule_id,skip,fund_target,return_date,note)
-    VALUES (${id},${type},${name},${amt},${date},${rule_id||''},${skip?1:0},${fund_target||''},${return_date||''},${note||''})`
+  await sql`INSERT INTO transactions(id,type,name,amt,date,rule_id,skip,fund_target,return_date,note,source_fund)
+    VALUES (${id},${type},${name},${amt},${date},${rule_id||''},${skip?1:0},${fund_target||''},${return_date||''},${note||''},${source_fund||''})`
   res.json({ id })
 })
 app.put('/api/transactions/:id', async (req, res) => {
-  const { type, name, amt, date, fund_target, return_date, note } = req.body
+  const { type, name, amt, date, fund_target, return_date, note, source_fund } = req.body
   await sql`UPDATE transactions SET type=${type},name=${name},amt=${amt},date=${date},
-    fund_target=${fund_target||''},return_date=${return_date||''},note=${note||''} WHERE id=${req.params.id}`
+    fund_target=${fund_target||''},return_date=${return_date||''},note=${note||''},source_fund=${source_fund||''} WHERE id=${req.params.id}`
   res.json({ ok: true })
 })
 app.delete('/api/transactions/:id', async (req, res) => {
@@ -320,6 +347,19 @@ app.put('/api/debts/:id', async (req, res) => {
 })
 app.delete('/api/debts/:id', async (req, res) => {
   await sql`DELETE FROM debts WHERE id = ${req.params.id}`
+  res.json({ ok: true })
+})
+app.post('/api/debts/:id/pay', async (req, res) => {
+  const { amount, date } = req.body
+  const debt = await sql`SELECT * FROM debts WHERE id = ${req.params.id}`
+  if (!debt[0]) return res.status(404).json({ error: 'not found' })
+  const d = debt[0]
+  const newPaid  = (d.paid_amt || 0) + amount
+  const repaid   = newPaid >= d.amt ? 1 : 0
+  await sql`UPDATE debts SET paid_amt=${newPaid}, repaid=${repaid} WHERE id=${req.params.id}`
+  const txId = uid()
+  await sql`INSERT INTO transactions(id,type,name,amt,date,rule_id,skip,fund_target,return_date,note,source_fund)
+    VALUES (${txId},'debtpay',${d.name},${amount},${date},'',0,'','','','')`
   res.json({ ok: true })
 })
 

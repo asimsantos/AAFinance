@@ -87,6 +87,7 @@ export default function Calendar({ year, month, ledger, selectedDay, onDayClick 
                   {events.some(e => e.type === 'lend')           && <span className="w-[5px] h-[5px] rounded-full bg-violet-400" />}
                   {events.some(e => e.type === 'autocover')      && <span className="w-[5px] h-[5px] rounded-full bg-amber-500" />}
                   {events.some(e => e.type === 'autocoverrepay') && <span className="w-[5px] h-[5px] rounded-full bg-teal-500" />}
+                  {events.some(e => e.type === 'debtpay')        && <span className="w-[5px] h-[5px] rounded-full bg-blue-600" />}
                   {isReconciled && <span className="w-[5px] h-[5px] rounded-full bg-teal-600" title="Reconciled" />}
                 </div>
               </div>

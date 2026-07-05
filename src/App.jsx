@@ -11,7 +11,7 @@ const FUNDS = [
   { key: 'cash',      label: 'Cash',            color: '#065F46', bg: '#ECFDF5', border: '#A7F3D0' },
   { key: 'car',       label: 'Car fund',         color: '#1D4ED8', bg: '#EFF6FF', border: '#BFDBFE' },
   { key: 'emergency', label: 'Emergency',        color: '#047857', bg: '#F0FDF4', border: '#BBF7D0' },
-  { key: 'debt',      label: 'Debt',             color: '#B91C1C', bg: '#FEF2F2', border: '#FECACA' },
+  { key: 'debt',      label: 'Debt Fund',        color: '#1E40AF', bg: '#EFF6FF', border: '#BFDBFE' },
   { key: 'home',      label: 'Tuition reserve',  color: '#6D28D9', bg: '#F5F3FF', border: '#DDD6FE' },
 ]
 
@@ -314,7 +314,7 @@ export default function App() {
           {/* ── Tab 3: MANAGE ─────────────────────────────────────── */}
           {mobileTab === 'manage' && (
             <div className="absolute inset-0 overflow-hidden flex flex-col bg-white">
-              <SettingsPanel onUpdate={refresh} />
+              <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0} />
             </div>
           )}
         </div>
@@ -460,7 +460,7 @@ export default function App() {
           </div>
           <div className="flex-1 overflow-y-auto">
             {rightView === 'rules'
-              ? <SettingsPanel onUpdate={refresh} />
+              ? <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0} />
               : <SidePanel dateStr={selectedDay} ledger={ledger} lends={lends} onUpdate={refresh} />
             }
           </div>

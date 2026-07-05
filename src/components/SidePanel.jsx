@@ -10,6 +10,7 @@ const TYPE_CFG = {
   borrow:        { label: 'Borrow',   sign: '+', color: '#9A3412', dot: 'bg-orange-500' },
   autocover:     { label: 'Cover',    sign: '-', color: '#92400E', dot: 'bg-amber-500' },
   autocoverrepay:{ label: 'Repay',    sign: '+', color: '#0F766E', dot: 'bg-teal-500' },
+  debtpay:       { label: 'Debt pay', sign: '-', color: '#1E40AF', dot: 'bg-blue-600' },
 }
 
 const FUND_OPTIONS = [
@@ -51,6 +52,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
   const [recur,      setRecur]      = useState(editEvent?.recur       || 'once')
   const [endDate,    setEndDate]    = useState(editEvent?.end_date    || '')
   const [fundTarget, setFundTarget] = useState(editEvent?.fund_target || 'car')
+  const [sourceFund, setSourceFund] = useState(editEvent?.source_fund || '')
   const [returnDate] = useState(editEvent?.return_date || '')
   const [scope,      setScope]      = useState('once')
   const [saving,     setSaving]     = useState(false)
@@ -60,6 +62,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
     setSaving(true)
     const a = parseFloat(amt)
     try {
+      const sf = type === 'expense' ? (sourceFund || '') : ''
       if (isRuleEdit) {
         if (scope === 'all') {
           await api.updateRule(editRuleId, {
@@ -68,6 +71,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
             end_date:    endDate || '',
             recur:       editEvent.recur || 'monthly',
             fund_target: type === 'fund' ? (fundTarget || '') : '',
+            source_fund: sf,
             person:      '',
           })
         } else if (scope === 'from') {
@@ -79,6 +83,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
             end_date:    prev,
             recur:       editEvent.recur,
             fund_target: editEvent.type === 'fund' ? (editEvent.fund_target || '') : '',
+            source_fund: editEvent.source_fund || '',
             person:      '',
           })
           await api.addRule({
@@ -87,6 +92,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
             end_date:    endDate || '',
             recur:       editEvent.recur || 'monthly',
             fund_target: type === 'fund' ? (fundTarget || '') : '',
+            source_fund: sf,
             person:      '',
           })
         } else {
@@ -94,6 +100,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
             type, name, amt: a, date: dateStr,
             rule_id:     editRuleId,
             fund_target: type === 'fund' ? (fundTarget || '') : '',
+            source_fund: sf,
             return_date: returnDate || '',
           })
         }
@@ -101,6 +108,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
         await api.updateTransaction(editEvent.id, {
           type, name, amt: a, date,
           fund_target: type === 'fund' ? (fundTarget || '') : '',
+          source_fund: sf,
           return_date: returnDate || '',
         })
       } else {
@@ -108,6 +116,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
           await api.addTransaction({
             type, name, amt: a, date,
             fund_target: type === 'fund' ? (fundTarget || '') : '',
+            source_fund: sf,
           })
         } else {
           await api.addRule({
@@ -116,6 +125,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
             end_date:    endDate || '',
             recur,
             fund_target: type === 'fund' ? (fundTarget || '') : '',
+            source_fund: sf,
             person:      '',
           })
         }
@@ -164,6 +174,13 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
       {type === 'fund' && (
         <select className={inp} value={fundTarget} onChange={e => setFundTarget(e.target.value)}>
           {FUND_OPTIONS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+        </select>
+      )}
+
+      {type === 'expense' && (
+        <select className={inp} value={sourceFund} onChange={e => setSourceFund(e.target.value)}>
+          <option value="">Deduct from cash (default)</option>
+          {FUND_OPTIONS.map(f => <option key={f.value} value={f.value}>Deduct from {f.label} first</option>)}
         </select>
       )}
 
@@ -344,7 +361,24 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
           const isIncome  = ev.type === 'income' || ev.type === 'borrow'
           const isCover   = ev.type === 'autocover'
           const isRepay   = ev.type === 'autocoverrepay'
+          const isDebtPay = ev.type === 'debtpay'
           const isEditing = editEvent?.id === ev.id
+
+          if (isDebtPay) {
+            return (
+              <div key={i}
+                className="flex items-center gap-3 px-3 py-2 rounded-xl border border-blue-200 bg-blue-50">
+                <span className="w-2 h-2 rounded-full flex-shrink-0 bg-blue-600" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12px] font-semibold text-blue-900 truncate">
+                    Debt fund → {ev.name}
+                  </p>
+                  <p className="text-[10px] text-blue-600 mt-0.5">Paid from debt fund</p>
+                </div>
+                <span className="text-[13px] font-bold flex-shrink-0 text-blue-700">-{fmt(ev.amt)}</span>
+              </div>
+            )
+          }
 
           if (isCover) {
             return (
@@ -398,6 +432,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
                     </p>
                     <p className="text-[10px] text-slate-400 mt-0.5">
                       {ev.source === 'rule' ? `Recurring · ${ev.recur}` : ev.type === 'borrow' ? 'Borrowed' : 'One-off'}
+                      {ev.source_fund ? ` · from ${FUND_LABEL[ev.source_fund] || ev.source_fund}` : ''}
                       {isFuture ? ' · projected' : ''}
                     </p>
                   </div>

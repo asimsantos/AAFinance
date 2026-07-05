@@ -31,4 +31,5 @@ export const api = {
   addDebt: (data) => post('/debts',data),
   updateDebt: (id,data) => put(`/debts/${id}`,data),
   deleteDebt: (id) => del(`/debts/${id}`),
+  payDebt: (id, amount, date) => post(`/debts/${id}/pay`, { amount, date }),
 }

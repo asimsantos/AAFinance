@@ -106,6 +106,8 @@ try { db.run("ALTER TABLE snapshots ADD COLUMN cash_pinned INTEGER DEFAULT 0") }
 try { db.run("ALTER TABLE snapshots ADD COLUMN partial_funds TEXT DEFAULT ''") } catch(e) {}
 try { db.run("ALTER TABLE snapshots ADD COLUMN reconciled INTEGER DEFAULT 0") } catch(e) {}
 try { db.run("ALTER TABLE debts ADD COLUMN paid_amt REAL DEFAULT 0") } catch(e) {}
+try { db.run("ALTER TABLE transactions ADD COLUMN source_fund TEXT DEFAULT ''") } catch(e) {}
+try { db.run("ALTER TABLE rules ADD COLUMN source_fund TEXT DEFAULT ''") } catch(e) {}
 
 // ── SEED (demo data — not real personal information) ─────────────
 const existing = get('SELECT COUNT(*) as c FROM rules')
@@ -133,8 +135,9 @@ if (!existing || existing.c === 0) {
   rules.forEach(r => db.run(ruleStmt, r))
 
   // Starting balances as of end of June
+  // debt column = debt repayment fund (savings pool), starts at 0
   db.run(`INSERT INTO snapshots(id,date,cash,car,emergency,debt,home) VALUES(?,?,?,?,?,?,?)`,
-    ['s1', '2026-06-30', 1200, 2800, 1500, 6400, 0])
+    ['s1', '2026-06-30', 1200, 2800, 1500, 0, 0])
 
   // Outstanding lend
   db.run(`INSERT INTO lends(id,name,amt,given_date,return_date) VALUES(?,?,?,?,?)`,
@@ -195,8 +198,6 @@ function computeLedger(from, to) {
 
   // Fetch transactions for the full computation window (loopFrom → to)
   const txns = all('SELECT * FROM transactions WHERE date>=? AND date<=?', [loopFrom, to])
-  // Debts with due dates that are still outstanding — used to auto-generate repayment events
-  const debtsWithDueDate = all("SELECT * FROM debts WHERE due_date != '' AND repaid = 0")
 
   const overrides = new Set(allTxns.filter(t => t.rule_id && !t.skip).map(t => `${t.rule_id}_${t.date}`))
   const skips     = new Set(allTxns.filter(t => t.skip).map(t => `${t.rule_id}_${t.date}`))
@@ -223,7 +224,7 @@ function computeLedger(from, to) {
       emergency = baseSnap.emergency, debt = baseSnap.debt, home = baseSnap.home
 
   // Track how much each fund has lent to cash via auto-cover so it can be repaid.
-  let autocoverOwed = { emergency: 0, home: 0, car: 0 }
+  let autocoverOwed = { emergency: 0, debt: 0, home: 0, car: 0 }
 
   const ledger = {}
   const d = new Date(loopFrom + 'T12:00:00')
@@ -245,7 +246,7 @@ function computeLedger(from, to) {
       if (full || partial.includes('debt'))      debt      = daySnap.debt
       if (full || partial.includes('home'))      home      = daySnap.home
       // A full snapshot represents ground-truth — reset any outstanding auto-cover debt
-      if (full) autocoverOwed = { emergency: 0, home: 0, car: 0 }
+      if (full) autocoverOwed = { emergency: 0, debt: 0, home: 0, car: 0 }
     }
 
     const openCash = cash   // cash before today's events
@@ -266,55 +267,70 @@ function computeLedger(from, to) {
           id: `rule_${rule.id}_${ds}`, rule_id: rule.id,
           type: rule.type, name: rule.name, amt: rule.amt,
           date: ds, fund_target: rule.fund_target,
+          source_fund: rule.source_fund || '',
           recur: rule.recur, source: 'rule'
         })
       }
     })
 
-    // Auto-repay borrowed debts on their due date
-    debtsWithDueDate.forEach(debtRecord => {
-      if (debtRecord.due_date === ds) {
-        const remaining = Math.max(0, debtRecord.amt - (debtRecord.paid_amt || 0))
-        if (remaining > 0) {
-          events.push({
-            id: `debtpay_${debtRecord.id}_${ds}`,
-            type: 'fund',
-            name: `Auto-repay – ${debtRecord.name}`,
-            amt: remaining,
-            fund_target: 'debt',
-            date: ds,
-            source: 'autopay'
-          })
-        }
-      }
-    })
-
     // Apply events to balances
     events.forEach(ev => {
-      if      (ev.type === 'income')  { cash += ev.amt }
-      else if (ev.type === 'expense') { cash -= ev.amt }
-      else if (ev.type === 'borrow')  { cash += ev.amt; debt += ev.amt }
-      else if (ev.type === 'fund') {
+      if (ev.type === 'income') {
+        cash += ev.amt
+      } else if (ev.type === 'expense') {
+        // If a source fund is nominated, draw from it first then spill to cash
+        if (ev.source_fund) {
+          let remaining = ev.amt
+          const deductFrom = (key) => {
+            const bal = { car, emergency, debt, home }[key] || 0
+            const take = Math.min(bal, remaining)
+            if (take > 0) {
+              if (key === 'car')       car       -= take
+              if (key === 'emergency') emergency -= take
+              if (key === 'debt')      debt      -= take
+              if (key === 'home')      home      -= take
+              remaining -= take
+            }
+          }
+          deductFrom(ev.source_fund)
+          cash -= remaining   // remainder (can be 0 if fund covered it all)
+        } else {
+          cash -= ev.amt
+        }
+      } else if (ev.type === 'borrow') {
+        cash += ev.amt                               // cash in; debt fund unaffected
+      } else if (ev.type === 'fund') {
         cash -= ev.amt
         if      (ev.fund_target === 'car')       car += ev.amt
         else if (ev.fund_target === 'emergency') emergency += ev.amt
-        else if (ev.fund_target === 'debt')      debt = Math.max(0, debt - ev.amt)
+        else if (ev.fund_target === 'debt')      debt += ev.amt   // accumulates (like car/emergency)
         else if (ev.fund_target === 'home')      home += ev.amt
+      } else if (ev.type === 'lend') {
+        cash -= ev.amt
+      } else if (ev.type === 'debtpay') {
+        debt -= ev.amt                               // payment from debt fund to creditor
       }
-      else if (ev.type === 'lend') { cash -= ev.amt }
     })
 
     // If cash is pinned on this snapshot, override any event-computed value
     if (daySnap?.cash_pinned) cash = daySnap.cash
 
-    // Auto-cover: when cash goes negative, draw from reserves in priority order.
-    // Each draw is tracked in autocoverOwed so it can be repaid later.
+    // Auto-cover: when cash goes negative, draw from reserves in priority order:
+    //   1. Emergency  2. Debt fund  3. Tuition reserve  4. Car fund
     if (cash < 0 && !daySnap?.cash_pinned) {
       const fromEmergency = Math.min(emergency, -cash)
       if (fromEmergency > 0) {
         emergency -= fromEmergency; cash += fromEmergency
         autocoverOwed.emergency += fromEmergency
         events.push({ id: `ac_em_${ds}`, type: 'autocover', name: 'Emergency fund', amt: fromEmergency, fund_target: 'emergency', date: ds, source: 'autocover' })
+      }
+      if (cash < 0) {
+        const fromDebt = Math.min(debt, -cash)
+        if (fromDebt > 0) {
+          debt -= fromDebt; cash += fromDebt
+          autocoverOwed.debt += fromDebt
+          events.push({ id: `ac_debt_${ds}`, type: 'autocover', name: 'Debt fund', amt: fromDebt, fund_target: 'debt', date: ds, source: 'autocover' })
+        }
       }
       if (cash < 0) {
         const fromHome = Math.min(home, -cash)
@@ -334,12 +350,9 @@ function computeLedger(from, to) {
       }
     }
 
-    // Auto-cover recovery: when cash ends positive, repay borrowed fund amounts
-    // in REVERSE draw order (car first, emergency last) so the last-resort fund
-    // is restored before the primary buffer, matching the user's expectation that
-    // the most recently borrowed reserve is the first to be topped back up.
+    // Auto-cover recovery: repay in reverse draw order (Car → Home → Debt → Emergency)
     if (cash > 0 && !daySnap?.cash_pinned &&
-        (autocoverOwed.emergency > 0 || autocoverOwed.home > 0 || autocoverOwed.car > 0)) {
+        (autocoverOwed.emergency > 0 || autocoverOwed.debt > 0 || autocoverOwed.home > 0 || autocoverOwed.car > 0)) {
       const repayCar = Math.min(autocoverOwed.car, cash)
       if (repayCar > 0) {
         car += repayCar; cash -= repayCar; autocoverOwed.car -= repayCar
@@ -350,6 +363,13 @@ function computeLedger(from, to) {
         if (repayHome > 0) {
           home += repayHome; cash -= repayHome; autocoverOwed.home -= repayHome
           events.push({ id: `acr_home_${ds}`, type: 'autocoverrepay', name: 'Tuition reserve', amt: repayHome, fund_target: 'home', date: ds, source: 'autocover' })
+        }
+      }
+      if (cash > 0) {
+        const repayDebt = Math.min(autocoverOwed.debt, cash)
+        if (repayDebt > 0) {
+          debt += repayDebt; cash -= repayDebt; autocoverOwed.debt -= repayDebt
+          events.push({ id: `acr_debt_${ds}`, type: 'autocoverrepay', name: 'Debt fund', amt: repayDebt, fund_target: 'debt', date: ds, source: 'autocover' })
         }
       }
       if (cash > 0) {
@@ -403,16 +423,16 @@ app.get('/api/ledger', (req, res) => {
 // Rules
 app.get('/api/rules', (_, res) => res.json(all('SELECT * FROM rules ORDER BY start_date')))
 app.post('/api/rules', (req, res) => {
-  const { type,name,amt,start_date,end_date,recur,fund_target,person } = req.body
+  const { type,name,amt,start_date,end_date,recur,fund_target,person,source_fund } = req.body
   const id = uid()
-  run(`INSERT INTO rules(id,type,name,amt,start_date,end_date,recur,fund_target,person) VALUES(?,?,?,?,?,?,?,?,?)`,
-    [id,type,name,amt,start_date,end_date||'',recur,fund_target||'',person||''])
+  run(`INSERT INTO rules(id,type,name,amt,start_date,end_date,recur,fund_target,person,source_fund) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+    [id,type,name,amt,start_date,end_date||'',recur,fund_target||'',person||'',source_fund||''])
   res.json({ id })
 })
 app.put('/api/rules/:id', (req, res) => {
-  const { name,amt,start_date,end_date,recur,fund_target,person } = req.body
-  run(`UPDATE rules SET name=?,amt=?,start_date=?,end_date=?,recur=?,fund_target=?,person=? WHERE id=?`,
-    [name,amt,start_date,end_date||'',recur,fund_target||'',person||'',req.params.id])
+  const { name,amt,start_date,end_date,recur,fund_target,person,source_fund } = req.body
+  run(`UPDATE rules SET name=?,amt=?,start_date=?,end_date=?,recur=?,fund_target=?,person=?,source_fund=? WHERE id=?`,
+    [name,amt,start_date,end_date||'',recur,fund_target||'',person||'',source_fund||'',req.params.id])
   res.json({ ok: true })
 })
 app.delete('/api/rules/:id', (req, res) => {
@@ -429,16 +449,16 @@ app.get('/api/transactions', (req, res) => {
   res.json(all(q + ' ORDER BY date', p))
 })
 app.post('/api/transactions', (req, res) => {
-  const { type,name,amt,date,rule_id,skip,fund_target,return_date,note } = req.body
+  const { type,name,amt,date,rule_id,skip,fund_target,return_date,note,source_fund } = req.body
   const id = uid()
-  run(`INSERT INTO transactions(id,type,name,amt,date,rule_id,skip,fund_target,return_date,note) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-    [id,type,name,amt,date,rule_id||'',skip?1:0,fund_target||'',return_date||'',note||''])
+  run(`INSERT INTO transactions(id,type,name,amt,date,rule_id,skip,fund_target,return_date,note,source_fund) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+    [id,type,name,amt,date,rule_id||'',skip?1:0,fund_target||'',return_date||'',note||'',source_fund||''])
   res.json({ id })
 })
 app.put('/api/transactions/:id', (req, res) => {
-  const { type,name,amt,date,fund_target,return_date,note } = req.body
-  run(`UPDATE transactions SET type=?,name=?,amt=?,date=?,fund_target=?,return_date=?,note=? WHERE id=?`,
-    [type,name,amt,date,fund_target||'',return_date||'',note||'',req.params.id])
+  const { type,name,amt,date,fund_target,return_date,note,source_fund } = req.body
+  run(`UPDATE transactions SET type=?,name=?,amt=?,date=?,fund_target=?,return_date=?,note=?,source_fund=? WHERE id=?`,
+    [type,name,amt,date,fund_target||'',return_date||'',note||'',source_fund||'',req.params.id])
   res.json({ ok: true })
 })
 app.delete('/api/transactions/:id', (req, res) => {
@@ -503,6 +523,21 @@ app.put('/api/debts/:id', (req, res) => {
 app.delete('/api/debts/:id', (req, res) => {
   run('DELETE FROM debts WHERE id=?', [req.params.id])
   res.json({ ok: true })
+})
+
+// Pay off a borrow from the debt fund
+app.post('/api/debts/:id/pay', (req, res) => {
+  const { amount, date } = req.body
+  const record = get('SELECT * FROM debts WHERE id=?', [req.params.id])
+  if (!record) return res.status(404).json({ error: 'Debt not found' })
+  const newPaid  = (record.paid_amt || 0) + amount
+  const isRepaid = newPaid >= record.amt
+  run('UPDATE debts SET paid_amt=?, repaid=? WHERE id=?', [newPaid, isRepaid ? 1 : 0, req.params.id])
+  const txId  = uid()
+  const today = date || new Date().toISOString().slice(0, 10)
+  run(`INSERT INTO transactions(id,type,name,amt,date,fund_target) VALUES(?,?,?,?,?,?)`,
+      [txId, 'debtpay', record.name, amount, today, req.params.id])
+  res.json({ id: txId, repaid: isRepaid })
 })
 
 // Lends
