@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import dayjs from 'dayjs'
 import { api } from '../api'
 
@@ -218,7 +218,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
         </div>
       )}
 
-      <div className="flex gap-2 pt-0.5">
+      <div className="flex gap-2 pt-2 sticky bottom-0 bg-slate-50 pb-1">
         <button onClick={onCancel}
           className="px-3 py-2 rounded-lg text-xs font-semibold text-slate-500 bg-white border border-slate-200 hover:bg-slate-50">
           Cancel
@@ -239,10 +239,45 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
   )
 }
 
+// ── One-line quick add: amount + name, defaults Out / selected day ─
+function QuickAdd({ dateStr, onSaved }) {
+  const [amt,    setAmt]    = useState('')
+  const [name,   setName]   = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const add = async () => {
+    const a = parseFloat(amt)
+    if (!a || !name.trim()) return
+    setSaving(true)
+    try {
+      await api.addTransaction({ type: 'expense', name: name.trim(), amt: a, date: dateStr, fund_target: '' })
+      setAmt(''); setName(''); onSaved()
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="flex gap-1.5">
+      <input className={`${inp} w-24 flex-shrink-0`} type="number" inputMode="decimal" placeholder="$"
+        value={amt} onChange={e => setAmt(e.target.value)} />
+      <input className={inp} placeholder="Quick add (Out)" value={name}
+        onChange={e => setName(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') add() }} />
+      <button onClick={add} disabled={saving || !parseFloat(amt) || !name.trim()}
+        className="px-3 rounded-lg text-xs font-bold text-white disabled:opacity-40 flex-shrink-0"
+        style={{ background: '#DC2626' }}>
+        Add
+      </button>
+    </div>
+  )
+}
+
 // ── Main side panel ───────────────────────────────────────────────
-export default function SidePanel({ dateStr, ledger, onUpdate }) {
+export default function SidePanel({ dateStr, ledger, onUpdate, isSheet = false, onFormOpenChange }) {
   const [adding,    setAdding]    = useState(false)
   const [editEvent, setEditEvent] = useState(null)
+
+  const formOpen = adding || !!editEvent
+  useEffect(() => { onFormOpenChange?.(formOpen) }, [formOpen])
 
   if (!dateStr) return (
     <div className="flex items-center justify-center h-full text-sm text-slate-400 p-6 text-center">
@@ -282,7 +317,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
 
       {/* Date header */}
       <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 flex-shrink-0">
-        <p className="font-bold text-slate-800 text-sm leading-tight">{d.format('dddd, D MMMM YYYY')}</p>
+        {!isSheet && <p className="font-bold text-slate-800 text-sm leading-tight">{d.format('dddd, D MMMM YYYY')}</p>}
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
           {isFuture && <p className="text-[10px] text-slate-400">Projected</p>}
           {ld.reconciled && (
@@ -302,7 +337,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
           )}
         </div>
 
-        {hasData && (
+        {hasData && !(isSheet && formOpen) && (
           <div className="mt-2.5 rounded-lg border border-slate-200 bg-white overflow-hidden">
             {[
               { label: 'Open',     value: openCash,     color: (openCash??0) < 0 ? 'text-red-600' : 'text-slate-700', prefix: (openCash??0) < 0 ? '-$' : '$',       bold: false },
@@ -335,6 +370,11 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+
+        {/* Quick add — sheet only */}
+        {isSheet && !adding && !editEvent && (
+          <QuickAdd dateStr={dateStr} onSaved={handleSaved} />
+        )}
 
         {/* Add transaction button */}
         {!adding && !editEvent && (

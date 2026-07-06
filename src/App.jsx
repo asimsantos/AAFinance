@@ -55,6 +55,7 @@ export default function App() {
   const [fundModal,   setFundModal] = useState(null)
   const [mobileTab,   setMobileTab] = useState('today')
   const [drawerOpen,  setDrawerOpen] = useState(false)
+  const [sheetFormOpen, setSheetFormOpen] = useState(false)
 
   const TAB_ORDER = ['today', 'calendar', 'manage']
   const swipeRef  = useRef(null)
@@ -378,7 +379,8 @@ export default function App() {
           </button>
         </div>
 
-        {/* ── Fund balances: 3-column grid ── */}
+        {/* ── Fund balances: 3-column grid — collapses while the form is open ── */}
+        {!sheetFormOpen && (
         <div className="flex-shrink-0 border-b border-slate-100 px-3 py-2.5">
           <div className="grid grid-cols-3 gap-2">
             {orderedFunds(selData).map(f => {
@@ -416,6 +418,7 @@ export default function App() {
             )}
           </div>
         </div>
+        )}
 
         {/* ── Day detail ── */}
         <div className="flex-1 overflow-y-auto">
@@ -423,6 +426,8 @@ export default function App() {
             dateStr={selectedDay}
             ledger={ledger}
             lends={lends}
+            isSheet
+            onFormOpenChange={setSheetFormOpen}
             onUpdate={() => { setDrawerOpen(false); refresh() }} />
         </div>
       </div>
