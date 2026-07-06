@@ -257,7 +257,8 @@ function QuickAdd({ dateStr, onSaved }) {
 
   return (
     <div className="flex gap-1.5">
-      <input className={`${inp} w-24 flex-shrink-0`} type="number" inputMode="decimal" placeholder="$"
+      <input className="w-24 flex-shrink-0 px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-emerald-400 bg-white"
+        type="number" inputMode="decimal" placeholder="$"
         value={amt} onChange={e => setAmt(e.target.value)} />
       <input className={inp} placeholder="Quick add (Out)" value={name}
         onChange={e => setName(e.target.value)}
