@@ -19,6 +19,7 @@
 - Stored in `data/finance.db` (SQLite database)
 - **Back up this file** — it contains all your transactions
 - To restore: just copy `finance.db` back into the `data/` folder
+- The database is **never committed to git** (see `.gitignore`) — your finances stay on this machine. The app creates and seeds a fresh database automatically if the file is missing, and the server writes a timestamped backup to `data/backups/` before any schema migration.
 
 ## Keyboard shortcut (optional)
 
