@@ -475,7 +475,7 @@ export default function SettingsPanel({ onUpdate, debtFundBalance = 0 }) {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 flex-shrink-0">
-        <p className="font-bold text-slate-800 text-sm">Fund Management</p>
+        <p className="font-bold text-slate-800 text-sm">Plan</p>
         <p className="text-[10px] text-slate-400 mt-0.5">Click any row to edit · Rules drive all projections</p>
       </div>
 

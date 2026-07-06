@@ -447,7 +447,7 @@ export default function App() {
           <div className="flex border-b border-slate-200 flex-shrink-0 bg-white">
             {[
               { key: 'day',   label: 'Day detail' },
-              { key: 'rules', label: 'Fund Management' },
+              { key: 'rules', label: 'Plan' },
             ].map(t => (
               <button key={t.key} onClick={() => setRightView(t.key)}
                 className={`flex-1 py-2.5 text-xs font-bold transition-colors
