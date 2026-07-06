@@ -13,14 +13,6 @@ const TYPE_CFG = {
   debtpay:       { label: 'Debt pay', sign: '-', color: '#1E40AF', dot: 'bg-blue-600' },
 }
 
-const FUND_OPTIONS = [
-  { value: 'car',       label: 'Car' },
-  { value: 'emergency', label: 'Emergency' },
-  { value: 'debt',      label: 'Debt' },
-  { value: 'home',      label: 'Tuition reserve' },
-]
-
-const FUND_LABEL = { car: 'Car', emergency: 'Emergency', debt: 'Debt', home: 'Tuition reserve' }
 const RECUR_OPTIONS = [
   { value: 'once',        label: 'One time' },
   { value: 'weekly',      label: 'Weekly' },
@@ -41,7 +33,7 @@ function fmt(n) {
 const inp = 'w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-emerald-400 bg-white'
 
 // ── Transaction create / edit form ────────────────────────────────
-function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
+function TxForm({ dateStr, editEvent, editRuleId, activeFunds = [], onSaved, onCancel }) {
   const isEdit     = !!editEvent
   const isRuleEdit = isEdit && editEvent.source === 'rule'
 
@@ -51,7 +43,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
   const [date,       setDate]       = useState(dateStr                || dayjs().format('YYYY-MM-DD'))
   const [recur,      setRecur]      = useState(editEvent?.recur       || 'once')
   const [endDate,    setEndDate]    = useState(editEvent?.end_date    || '')
-  const [fundTarget, setFundTarget] = useState(editEvent?.fund_target || 'car')
+  const [fundTarget, setFundTarget] = useState(editEvent?.fund_target || activeFunds[0]?.key || '')
   const [sourceFund, setSourceFund] = useState(editEvent?.source_fund || '')
   const [returnDate] = useState(editEvent?.return_date || '')
   const [scope,      setScope]      = useState('once')
@@ -173,14 +165,14 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
 
       {type === 'fund' && (
         <select className={inp} value={fundTarget} onChange={e => setFundTarget(e.target.value)}>
-          {FUND_OPTIONS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+          {activeFunds.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
         </select>
       )}
 
       {type === 'expense' && (
         <select className={inp} value={sourceFund} onChange={e => setSourceFund(e.target.value)}>
           <option value="">Deduct from cash (default)</option>
-          {FUND_OPTIONS.map(f => <option key={f.value} value={f.value}>Deduct from {f.label} first</option>)}
+          {activeFunds.map(f => <option key={f.key} value={f.key}>Deduct from {f.label} first</option>)}
         </select>
       )}
 
@@ -273,9 +265,12 @@ function QuickAdd({ dateStr, onSaved }) {
 }
 
 // ── Main side panel ───────────────────────────────────────────────
-export default function SidePanel({ dateStr, ledger, onUpdate, isSheet = false, onFormOpenChange }) {
+export default function SidePanel({ dateStr, ledger, onUpdate, funds = [], isSheet = false, onFormOpenChange }) {
   const [adding,    setAdding]    = useState(false)
   const [editEvent, setEditEvent] = useState(null)
+
+  const activeFunds = funds.filter(f => !f.archived)
+  const fundLabel   = key => funds.find(f => f.key === key)?.label || key
 
   const formOpen = adding || !!editEvent
   useEffect(() => { onFormOpenChange?.(formOpen) }, [formOpen])
@@ -390,6 +385,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate, isSheet = false, 
           <TxForm
             dateStr={dateStr}
             editEvent={null}
+            activeFunds={activeFunds}
             onSaved={handleSaved}
             onCancel={handleCancel} />
         )}
@@ -460,6 +456,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate, isSheet = false, 
                   dateStr={dateStr}
                   editEvent={ev}
                   editRuleId={ev.rule_id || null}
+                  activeFunds={activeFunds}
                   onSaved={handleSaved}
                   onCancel={handleCancel} />
               ) : (
@@ -469,11 +466,11 @@ export default function SidePanel({ dateStr, ledger, onUpdate, isSheet = false, 
                   <span className={`w-2 h-2 rounded-full flex-shrink-0 ${cfg.dot}`} />
                   <div className="flex-1 min-w-0">
                     <p className="text-[13px] font-semibold text-slate-800 truncate">
-                      {ev.name}{ev.type === 'fund' && ev.fund_target ? ` → ${FUND_LABEL[ev.fund_target] || ev.fund_target}` : ''}
+                      {ev.name}{ev.type === 'fund' && ev.fund_target ? ` → ${fundLabel(ev.fund_target)}` : ''}
                     </p>
                     <p className="text-[10px] text-slate-400 mt-0.5">
                       {ev.source === 'rule' ? `Recurring · ${ev.recur}` : ev.type === 'borrow' ? 'Borrowed' : 'One-off'}
-                      {ev.source_fund ? ` · from ${FUND_LABEL[ev.source_fund] || ev.source_fund}` : ''}
+                      {ev.source_fund ? ` · from ${fundLabel(ev.source_fund)}` : ''}
                       {isFuture ? ' · projected' : ''}
                     </p>
                   </div>

@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import dayjs from 'dayjs'
 import { api } from '../api'
 
-export default function FundModal({ fund, ledger, onClose, onSaved }) {
+export default function FundModal({ fund, ledger, activeFunds = [], onClose, onSaved }) {
   const today   = dayjs().format('YYYY-MM-DD')
   const todayLd = ledger[today] || {}
   const [val,        setVal]        = useState(
@@ -19,25 +19,21 @@ export default function FundModal({ fund, ledger, onClose, onSaved }) {
     const numVal = parseFloat(val) || 0
     try {
       if (reconcile) {
-        // Full snapshot: anchor ALL funds to today's computed values, mark reconciled
+        // Full snapshot: anchor cash + every active fund to today's values, mark reconciled
         await api.upsertSnapshot({
-          date:      today,
-          cash:      isCash ? numVal : (todayLd.cash      ?? 0),
-          car:       fund.key === 'car'       ? numVal : (todayLd.car       ?? 0),
-          emergency: fund.key === 'emergency' ? numVal : (todayLd.emergency ?? 0),
-          debt:      fund.key === 'debt'      ? numVal : (todayLd.debt      ?? 0),
-          home:      fund.key === 'home'      ? numVal : (todayLd.home      ?? 0),
+          date: today,
+          cash: isCash ? numVal : (todayLd.cash ?? 0),
+          balances: Object.fromEntries(activeFunds.map(f =>
+            [f.key, f.key === fund.key ? numVal : (todayLd[f.key] ?? 0)])),
           cash_pinned: pinned,
           reconciled: true,
         })
+      } else if (isCash) {
+        // Partial snapshot: cash only
+        await api.upsertSnapshot({ date: today, cash: numVal, cash_pinned: pinned })
       } else {
-        // Partial snapshot: only update this one fund
-        await api.upsertSnapshot({
-          date:     today,
-          [fund.key]: numVal,
-          fund_key: fund.key,
-          ...(isCash ? { cash_pinned: pinned } : {}),
-        })
+        // Partial snapshot: only this one fund
+        await api.upsertSnapshot({ date: today, balances: { [fund.key]: numVal } })
       }
       onSaved()
     } finally { setSaving(false) }

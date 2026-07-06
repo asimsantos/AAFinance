@@ -2,19 +2,13 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import dayjs from 'dayjs'
 import { api } from './api'
 import { useLedger } from './hooks/useLedger'
+import { useFunds } from './hooks/useFunds'
+import { CASH } from './fundStyle'
 import Calendar from './components/Calendar'
 import SidePanel from './components/SidePanel'
 import FundModal from './components/FundModal'
 import SettingsPanel from './components/SettingsPanel'
 import TodayBriefing from './components/TodayBriefing'
-
-const FUNDS = [
-  { key: 'cash',      label: 'Cash',            color: '#065F46', bg: '#ECFDF5', border: '#A7F3D0' },
-  { key: 'car',       label: 'Car fund',         color: '#1D4ED8', bg: '#EFF6FF', border: '#BFDBFE' },
-  { key: 'emergency', label: 'Emergency',        color: '#047857', bg: '#F0FDF4', border: '#BBF7D0' },
-  { key: 'debt',      label: 'Debt Fund',        color: '#1E40AF', bg: '#EFF6FF', border: '#BFDBFE' },
-  { key: 'home',      label: 'Tuition reserve',  color: '#6D28D9', bg: '#F5F3FF', border: '#DDD6FE' },
-]
 
 function fmt(n) {
   const abs = Math.abs(Math.round(n))
@@ -76,10 +70,12 @@ export default function App() {
   }
 
   const { ledger, loading, reload } = useLedger(year, month)
+  const { funds, activeFunds, reloadFunds } = useFunds()
   const loadLends = async () => setLends(await api.getLends())
   const loadDebts = async () => setDebts(await api.getDebts())
   useEffect(() => { loadLends(); loadDebts() }, [])
   const refresh = () => { reload(); loadLends(); loadDebts() }
+  const handleFundsChange = () => { reloadFunds(); reload() }
 
   const changeMonth = dir => {
     let m = month + dir, y = year
@@ -115,11 +111,11 @@ export default function App() {
   const activeDebts   = debts.filter(d => !d.repaid)
   const totalBorrowed = activeDebts.reduce((s, d) => s + Math.max(0, d.amt - (d.paid_amt || 0)), 0)
 
-  // Cash first, then funded funds in declared order, zero-balance funds last
+  // Cash first, then funded funds in configured order, zero-balance funds last
   const orderedFunds = dayData => [
-    ...FUNDS.filter(f => f.key === 'cash'),
-    ...FUNDS.filter(f => f.key !== 'cash' && Math.round(dayData[f.key] ?? 0) !== 0),
-    ...FUNDS.filter(f => f.key !== 'cash' && Math.round(dayData[f.key] ?? 0) === 0),
+    CASH,
+    ...activeFunds.filter(f => Math.round(dayData[f.key] ?? 0) !== 0),
+    ...activeFunds.filter(f => Math.round(dayData[f.key] ?? 0) === 0),
   ]
 
   // ── Reusable: fund balance cards for a given day's data ──────────
@@ -328,7 +324,8 @@ export default function App() {
           {/* ── Tab 3: MANAGE ─────────────────────────────────────── */}
           {mobileTab === 'manage' && (
             <div className="absolute inset-0 overflow-hidden flex flex-col bg-white">
-              <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0} />
+              <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0}
+                funds={funds} onFundsChange={handleFundsChange} />
             </div>
           )}
         </div>
@@ -431,6 +428,7 @@ export default function App() {
             dateStr={selectedDay}
             ledger={ledger}
             lends={lends}
+            funds={funds}
             isSheet
             onFormOpenChange={setSheetFormOpen}
             onUpdate={() => { setDrawerOpen(false); refresh() }} />
@@ -478,8 +476,9 @@ export default function App() {
           </div>
           <div className="flex-1 overflow-y-auto">
             {rightView === 'rules'
-              ? <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0} />
-              : <SidePanel dateStr={selectedDay} ledger={ledger} lends={lends} onUpdate={refresh} />
+              ? <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0}
+                  funds={funds} onFundsChange={handleFundsChange} />
+              : <SidePanel dateStr={selectedDay} ledger={ledger} lends={lends} funds={funds} onUpdate={refresh} />
             }
           </div>
         </aside>
@@ -490,6 +489,7 @@ export default function App() {
         <FundModal
           fund={fundModal}
           ledger={ledger}
+          activeFunds={activeFunds}
           onClose={() => setFundModal(null)}
           onSaved={() => { setFundModal(null); refresh() }} />
       )}

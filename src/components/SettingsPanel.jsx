@@ -2,8 +2,6 @@ import React, { useState, useEffect } from 'react'
 import dayjs from 'dayjs'
 import { api } from '../api'
 
-const FUND_LABEL = { car: 'Car', emergency: 'Emergency', debt: 'Debt Fund', home: 'Tuition reserve' }
-
 function fmt(n) {
   const abs = Math.abs(Math.round(n))
   return (n < 0 ? '-$' : '$') + abs.toLocaleString('en-AU')
@@ -23,7 +21,7 @@ const RECUR_LABEL = {
 const inp = 'w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-emerald-400 bg-white'
 
 // ── Rule row ──────────────────────────────────────────────────────
-function RuleRow({ rule, onEdit, onDelete }) {
+function RuleRow({ rule, fundLabel, onEdit, onDelete }) {
   const cfg     = TYPE_COLOR[rule.type] || TYPE_COLOR.expense
   const today   = dayjs().format('YYYY-MM-DD')
   const isEnded = rule.end_date && rule.end_date < today
@@ -38,8 +36,8 @@ function RuleRow({ rule, onEdit, onDelete }) {
       <div className="flex-1 min-w-0">
         <p className="text-[13px] font-semibold text-slate-800 truncate">
           {rule.name}
-          {rule.type === 'fund' && rule.fund_target && <span className="text-[11px] text-slate-500 ml-1">→ {FUND_LABEL[rule.fund_target] || rule.fund_target}</span>}
-          {rule.type === 'expense' && rule.source_fund && <span className="text-[10px] text-blue-500 ml-1">from {FUND_LABEL[rule.source_fund] || rule.source_fund}</span>}
+          {rule.type === 'fund' && rule.fund_target && <span className="text-[11px] text-slate-500 ml-1">→ {fundLabel(rule.fund_target)}</span>}
+          {rule.type === 'expense' && rule.source_fund && <span className="text-[10px] text-blue-500 ml-1">from {fundLabel(rule.source_fund)}</span>}
           {rule.person && !rule.name.includes(rule.person) && <span className="text-[10px] text-slate-400 ml-1">({rule.person})</span>}
         </p>
         <p className="text-[10px] text-slate-500 mt-0.5">
@@ -61,7 +59,7 @@ function RuleRow({ rule, onEdit, onDelete }) {
 }
 
 // ── Rule form ─────────────────────────────────────────────────────
-function RuleForm({ rule, onSave, onCancel }) {
+function RuleForm({ rule, activeFunds = [], onSave, onCancel }) {
   const [f, setF] = useState({
     id:          rule.id          || '',
     type:        rule.type        || 'expense',
@@ -70,7 +68,7 @@ function RuleForm({ rule, onSave, onCancel }) {
     start_date:  rule.start_date  || dayjs().format('YYYY-MM-DD'),
     end_date:    rule.end_date    || '',
     recur:       rule.recur       || 'monthly',
-    fund_target: rule.fund_target || 'car',
+    fund_target: rule.fund_target || activeFunds[0]?.key || '',
     source_fund: rule.source_fund || '',
     person:      rule.person      || '',
   })
@@ -100,16 +98,16 @@ function RuleForm({ rule, onSave, onCancel }) {
 
       {f.type === 'fund' && (
         <select className={inp} value={f.fund_target} onChange={e => set('fund_target', e.target.value)}>
-          {Object.entries(FUND_LABEL).map(([v, l]) => (
-            <option key={v} value={v}>{l}</option>
+          {activeFunds.map(fd => (
+            <option key={fd.key} value={fd.key}>{fd.label}</option>
           ))}
         </select>
       )}
       {f.type === 'expense' && (
         <select className={inp} value={f.source_fund} onChange={e => set('source_fund', e.target.value)}>
           <option value="">Deduct from cash (default)</option>
-          {Object.entries(FUND_LABEL).map(([v, l]) => (
-            <option key={v} value={v}>Deduct from {l} first</option>
+          {activeFunds.map(fd => (
+            <option key={fd.key} value={fd.key}>Deduct from {fd.label} first</option>
           ))}
         </select>
       )}
@@ -147,7 +145,7 @@ function RuleForm({ rule, onSave, onCancel }) {
           className="flex-1 py-2 rounded-lg text-sm border border-slate-200 text-slate-500 hover:bg-slate-50">
           Cancel
         </button>
-        <button onClick={() => onSave({ ...f, amt: parseFloat(f.amt) || 0, fund_target: f.type === 'fund' ? (f.fund_target || 'car') : '', source_fund: f.type === 'expense' ? (f.source_fund || '') : '' })}
+        <button onClick={() => onSave({ ...f, amt: parseFloat(f.amt) || 0, fund_target: f.type === 'fund' ? (f.fund_target || activeFunds[0]?.key || '') : '', source_fund: f.type === 'expense' ? (f.source_fund || '') : '' })}
           className="flex-1 py-2 rounded-lg text-sm font-bold text-white"
           style={{ background: '#065F46' }}>
           Save rule
@@ -410,7 +408,9 @@ function DebtPayForm({ debt, debtFundBalance, onPay, onEditInstead, onCancel }) 
 }
 
 // ── Main settings panel ───────────────────────────────────────────
-export default function SettingsPanel({ onUpdate, debtFundBalance = 0 }) {
+export default function SettingsPanel({ onUpdate, debtFundBalance = 0, funds = [], onFundsChange }) {
+  const activeFunds = funds.filter(f => !f.archived)
+  const fundLabel   = key => funds.find(f => f.key === key)?.label || key
   const [tab,         setTab]         = useState('income')
   const [rules,       setRules]       = useState([])
   const [lends,       setLends]       = useState([])
@@ -500,11 +500,11 @@ export default function SettingsPanel({ onUpdate, debtFundBalance = 0 }) {
         {(tab === 'income' || tab === 'expense' || tab === 'fund') && (
           <>
             {editRule ? (
-              <RuleForm rule={editRule} onSave={saveRule} onCancel={() => setEditRule(null)} />
+              <RuleForm rule={editRule} activeFunds={activeFunds} onSave={saveRule} onCancel={() => setEditRule(null)} />
             ) : (
               <>
                 {rules.filter(r => r.type === tab).map(r => (
-                  <RuleRow key={r.id} rule={r} onEdit={setEditRule} onDelete={deleteRule} />
+                  <RuleRow key={r.id} rule={r} fundLabel={fundLabel} onEdit={setEditRule} onDelete={deleteRule} />
                 ))}
                 {rules.filter(r => r.type === tab).length === 0 && (
                   <p className="text-center text-slate-400 text-xs py-6">No {tab} rules yet</p>
@@ -513,7 +513,7 @@ export default function SettingsPanel({ onUpdate, debtFundBalance = 0 }) {
                   onClick={() => setEditRule({
                     type: tab, name: '', amt: '',
                     start_date: dayjs().format('YYYY-MM-DD'),
-                    end_date: '', recur: 'monthly', fund_target: tab === 'fund' ? 'car' : '', person: '',
+                    end_date: '', recur: 'monthly', fund_target: tab === 'fund' ? (activeFunds[0]?.key || '') : '', person: '',
                   })}
                   className="w-full py-2.5 rounded-xl border border-dashed border-slate-300 text-xs text-slate-400 hover:bg-slate-50 hover:border-slate-400 transition-colors">
                   + Add {tab === 'fund' ? 'transfer' : tab} rule
