@@ -407,6 +407,110 @@ function DebtPayForm({ debt, debtFundBalance, onPay, onEditInstead, onCancel }) 
   )
 }
 
+// ── Fund row (Funds management tab) ───────────────────────────────
+function FundRow({ fund, onEdit, onUp, onDown }) {
+  return (
+    <div
+      className={`flex items-center gap-2.5 p-3 rounded-xl border border-slate-200 bg-white cursor-pointer group transition-all hover:shadow-sm ${fund.archived ? 'opacity-40' : ''}`}
+      onClick={() => onEdit(fund)}>
+      <span className="w-3 h-3 rounded-full flex-shrink-0 border border-black/10" style={{ background: fund.color }} />
+      <div className="flex-1 min-w-0">
+        <p className="text-[13px] font-semibold text-slate-800 truncate">
+          {fund.label}
+          {fund.archived ? <span className="ml-1 text-[10px] text-slate-400">archived</span> : null}
+        </p>
+        <p className="text-[10px] text-slate-500 mt-0.5">
+          {fund.autocover_priority != null ? `Auto-cover #${fund.autocover_priority}` : 'No auto-cover'}
+          {fund.target != null ? ` · target ${fmt(fund.target)}` : ''}
+        </p>
+      </div>
+      <button onClick={e => { e.stopPropagation(); onUp() }}
+        className="w-6 h-6 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-xs flex-shrink-0" title="Move up">▲</button>
+      <button onClick={e => { e.stopPropagation(); onDown() }}
+        className="w-6 h-6 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-xs flex-shrink-0" title="Move down">▼</button>
+    </div>
+  )
+}
+
+// ── Fund form (add / edit) ────────────────────────────────────────
+function FundForm({ fund, onSave, onDelete, onCancel }) {
+  const [f, setF] = useState({
+    id:                 fund.id    || '',
+    label:              fund.label || '',
+    color:              fund.color || '#1D4ED8',
+    target:             fund.target ?? '',
+    autocover_priority: fund.autocover_priority ?? '',
+    archived:           !!fund.archived,
+  })
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }))
+
+  const save = () => {
+    if (!f.label.trim()) return
+    onSave({
+      id:                 f.id,
+      label:              f.label.trim(),
+      color:              f.color,
+      target:             f.target === '' ? null : (parseFloat(f.target) || 0),
+      autocover_priority: f.autocover_priority === '' ? null : parseInt(f.autocover_priority, 10),
+      archived:           f.archived,
+    })
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-bold text-slate-700">{f.id ? 'Edit fund' : 'New fund'}</span>
+        <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+      </div>
+
+      <input className={inp} value={f.label} onChange={e => set('label', e.target.value)}
+        placeholder="Fund name" autoFocus />
+
+      <div className="flex gap-2 items-center">
+        <label className="flex items-center gap-2 text-[11px] text-slate-500 flex-shrink-0">
+          Colour
+          <input type="color" value={f.color} onChange={e => set('color', e.target.value)}
+            className="w-9 h-9 rounded-lg border border-slate-200 bg-white cursor-pointer" />
+        </label>
+        <input className={inp} type="number" value={f.target}
+          onChange={e => set('target', e.target.value)} placeholder="Savings target $ (optional)" />
+      </div>
+
+      <div>
+        <p className="text-[9px] text-slate-400 uppercase tracking-wide mb-1">Auto-cover priority — lower draws first, blank = never auto-drawn</p>
+        <input className={inp} type="number" min="1" value={f.autocover_priority}
+          onChange={e => set('autocover_priority', e.target.value)} placeholder="Never" />
+      </div>
+
+      {f.id && (
+        <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+          <input type="checkbox" checked={f.archived} onChange={e => set('archived', e.target.checked)}
+            className="accent-emerald-700" />
+          Archived — hidden from tiles and forms, history unaffected
+        </label>
+      )}
+
+      <div className="flex gap-2 pt-1">
+        <button onClick={onCancel}
+          className="px-3 py-2 rounded-lg text-sm border border-slate-200 text-slate-500 hover:bg-slate-50">
+          Cancel
+        </button>
+        {f.id && !fund.referenced && (
+          <button onClick={() => onDelete(fund)}
+            className="px-3 py-2 rounded-lg text-sm text-red-600 bg-red-50 border border-red-100 hover:bg-red-100">
+            Delete
+          </button>
+        )}
+        <button onClick={save}
+          className="flex-1 py-2 rounded-lg text-sm font-bold text-white"
+          style={{ background: '#065F46' }}>
+          Save fund
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Main settings panel ───────────────────────────────────────────
 export default function SettingsPanel({ onUpdate, debtFundBalance = 0, funds = [], onFundsChange }) {
   const activeFunds = funds.filter(f => !f.archived)
@@ -419,6 +523,7 @@ export default function SettingsPanel({ onUpdate, debtFundBalance = 0, funds = [
   const [editLend,    setEditLend]    = useState(null)
   const [editDebt,    setEditDebt]    = useState(null)
   const [payDebtItem, setPayDebtItem] = useState(null)
+  const [editFund,    setEditFund]    = useState(null)
 
   const load = async () => {
     const [r, l, d] = await Promise.all([api.getRules(), api.getLends(), api.getDebts()])
@@ -461,15 +566,36 @@ export default function SettingsPanel({ onUpdate, debtFundBalance = 0, funds = [
     setPayDebtItem(null); load(); onUpdate()
   }
 
+  const saveFund = async f => {
+    if (f.id) await api.updateFund(f.id, f)
+    else      await api.addFund(f)
+    setEditFund(null); onFundsChange?.()
+  }
+  const deleteFund = async f => {
+    if (!window.confirm(`Delete the ${f.label} fund?`)) return
+    const res = await api.deleteFund(f.id)
+    if (res?.error) window.alert(res.error)
+    setEditFund(null); onFundsChange?.()
+  }
+  const moveFund = async (idx, dir) => {
+    const ids = funds.map(fd => fd.id)
+    const j = idx + dir
+    if (j < 0 || j >= ids.length) return
+    ;[ids[idx], ids[j]] = [ids[j], ids[idx]]
+    await api.reorderFunds(ids)
+    onFundsChange?.()
+  }
+
   const TABS = [
-    { key: 'income',  label: 'Income' },
-    { key: 'expense', label: 'Expenses' },
-    { key: 'fund',    label: 'Transfers' },
-    { key: 'lend',    label: 'Lends' },
-    { key: 'borrow',  label: 'Borrows' },
+    { key: 'income',    label: 'Income' },
+    { key: 'expense',   label: 'Expenses' },
+    { key: 'fund',      label: 'Transfers' },
+    { key: 'lend',      label: 'Lends' },
+    { key: 'borrow',    label: 'Borrows' },
+    { key: 'fundsmgmt', label: 'Funds' },
   ]
 
-  const resetEdits = () => { setEditRule(null); setEditLend(null); setEditDebt(null); setPayDebtItem(null) }
+  const resetEdits = () => { setEditRule(null); setEditLend(null); setEditDebt(null); setPayDebtItem(null); setEditFund(null) }
 
   return (
     <div className="flex flex-col h-full">
@@ -517,6 +643,33 @@ export default function SettingsPanel({ onUpdate, debtFundBalance = 0, funds = [
                   })}
                   className="w-full py-2.5 rounded-xl border border-dashed border-slate-300 text-xs text-slate-400 hover:bg-slate-50 hover:border-slate-400 transition-colors">
                   + Add {tab === 'fund' ? 'transfer' : tab} rule
+                </button>
+              </>
+            )}
+          </>
+        )}
+
+        {/* ── Funds management tab ── */}
+        {tab === 'fundsmgmt' && (
+          <>
+            {editFund ? (
+              <FundForm fund={editFund} onSave={saveFund} onDelete={deleteFund} onCancel={() => setEditFund(null)} />
+            ) : (
+              <>
+                <p className="text-[10px] text-slate-400 px-0.5">
+                  ▲▼ set display order · auto-cover draws by priority number · tap a fund to edit
+                </p>
+                {funds.map((f, i) => (
+                  <FundRow key={f.id} fund={f} onEdit={setEditFund}
+                    onUp={() => moveFund(i, -1)} onDown={() => moveFund(i, 1)} />
+                ))}
+                {funds.length === 0 && (
+                  <p className="text-center text-slate-400 text-xs py-6">No funds yet</p>
+                )}
+                <button
+                  onClick={() => setEditFund({ label: '', color: '#1D4ED8', target: null, autocover_priority: null, archived: 0 })}
+                  className="w-full py-2.5 rounded-xl border border-dashed border-slate-300 text-xs text-slate-400 hover:bg-slate-50 hover:border-slate-400 transition-colors">
+                  + Add fund
                 </button>
               </>
             )}
