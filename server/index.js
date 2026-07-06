@@ -197,6 +197,70 @@ app.get('/api/ledger', (req, res) => {
   }))
 })
 
+// Funds
+// Day objects spread fund balances by key, so keys may never collide
+// with the ledger's own fields.
+const RESERVED_FUND_KEYS = ['cash', 'openCash', 'events', 'dayIn', 'daySpend', 'dayTransfer', 'dayOut', 'hasSnapshot', 'cash_pinned', 'reconciled', 'autocoverOwed']
+
+function fundReferenced(id, key) {
+  return !!(
+    get('SELECT 1 x FROM rules WHERE fund_target=? OR source_fund=? LIMIT 1', [key, key]) ||
+    get('SELECT 1 x FROM transactions WHERE fund_target=? OR source_fund=? LIMIT 1', [key, key]) ||
+    get('SELECT 1 x FROM snapshot_balances WHERE fund_id=? LIMIT 1', [id])
+  )
+}
+
+function slugKey(label) {
+  let base = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'fund'
+  if (RESERVED_FUND_KEYS.includes(base)) base = base + '_fund'
+  let key = base, i = 2
+  while (get('SELECT 1 x FROM funds WHERE key=?', [key])) key = `${base}_${i++}`
+  return key
+}
+
+app.get('/api/funds', (_, res) => {
+  const funds = all('SELECT * FROM funds ORDER BY sort_order')
+  res.json(funds.map(f => ({ ...f, referenced: fundReferenced(f.id, f.key) ? 1 : 0 })))
+})
+app.post('/api/funds', (req, res) => {
+  const { label, color, target, autocover_priority } = req.body
+  if (!label || !String(label).trim()) return res.status(400).json({ error: 'label required' })
+  const key = slugKey(label)
+  const id = uid()
+  const maxSort = get('SELECT MAX(sort_order) m FROM funds')?.m
+  run('INSERT INTO funds(id,key,label,color,sort_order,autocover_priority,target,archived) VALUES(?,?,?,?,?,?,?,0)',
+    [id, key, String(label).trim(), color || '#1D4ED8', (maxSort ?? -1) + 1, autocover_priority ?? null, target ?? null])
+  res.json({ id, key })
+})
+app.put('/api/funds/:id', (req, res) => {
+  const f = get('SELECT * FROM funds WHERE id=?', [req.params.id])
+  if (!f) return res.status(404).json({ error: 'fund not found' })
+  const { label, color, target, autocover_priority, archived } = req.body
+  run('UPDATE funds SET label=?,color=?,target=?,autocover_priority=?,archived=? WHERE id=?',
+    [label ?? f.label, color ?? f.color,
+     target === undefined ? f.target : target,
+     autocover_priority === undefined ? f.autocover_priority : autocover_priority,
+     archived === undefined ? f.archived : (archived ? 1 : 0),
+     req.params.id])
+  res.json({ ok: true })
+})
+app.post('/api/funds/reorder', (req, res) => {
+  const { ids } = req.body
+  if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids array required' })
+  ids.forEach((id, i) => db.run('UPDATE funds SET sort_order=? WHERE id=?', [i, id]))
+  persist()
+  res.json({ ok: true })
+})
+app.delete('/api/funds/:id', (req, res) => {
+  const f = get('SELECT * FROM funds WHERE id=?', [req.params.id])
+  if (!f) return res.status(404).json({ error: 'fund not found' })
+  if (fundReferenced(f.id, f.key)) {
+    return res.status(409).json({ error: 'Fund is referenced by rules, transactions or snapshots — archive it instead.' })
+  }
+  run('DELETE FROM funds WHERE id=?', [req.params.id])
+  res.json({ ok: true })
+})
+
 // Rules
 app.get('/api/rules', (_, res) => res.json(all('SELECT * FROM rules ORDER BY start_date')))
 app.post('/api/rules', (req, res) => {
@@ -244,42 +308,47 @@ app.delete('/api/transactions/:id', (req, res) => {
 })
 
 // Snapshots
-app.get('/api/snapshots', (_, res) => res.json(all('SELECT * FROM snapshots ORDER BY date')))
+app.get('/api/snapshots', (_, res) => {
+  const snaps = all('SELECT * FROM snapshots ORDER BY date')
+  const keyById = Object.fromEntries(all('SELECT id,key FROM funds').map(f => [f.id, f.key]))
+  const grouped = {}
+  all('SELECT * FROM snapshot_balances').forEach(r => {
+    const k = keyById[r.fund_id]
+    if (k) (grouped[r.snapshot_id] ||= {})[k] = r.amount
+  })
+  res.json(snaps.map(s => ({ ...s, balances: grouped[s.id] || {} })))
+})
+// Upsert a snapshot for a date. `cash` present anchors cash (cash_set);
+// `balances` {fundKey: amount} anchors exactly those funds.
 app.post('/api/snapshots', (req, res) => {
-  const { date, cash, car, emergency, debt, home, cash_pinned, fund_key, reconciled } = req.body
-  const VALID_FUNDS = ['cash', 'car', 'emergency', 'debt', 'home']
+  const { date, cash, cash_pinned, reconciled, balances } = req.body
+  if (!date) return res.status(400).json({ error: 'date required' })
   const existing = get('SELECT * FROM snapshots WHERE date=?', [date])
-  const pinned = cash_pinned !== undefined ? (cash_pinned ? 1 : 0) : (existing?.cash_pinned ?? 0)
-  const rec = reconciled ? 1 : (existing?.reconciled ?? 0)
+  const pinned  = cash_pinned !== undefined ? (cash_pinned ? 1 : 0) : (existing?.cash_pinned ?? 0)
+  const rec     = reconciled ? 1 : (existing?.reconciled ?? 0)
+  const cashSet = cash !== undefined ? 1 : (existing?.cash_set ?? 0)
+  const cashVal = cash !== undefined ? cash : (existing?.cash ?? 0)
 
-  if (fund_key && VALID_FUNDS.includes(fund_key) && !reconciled) {
-    // Partial snapshot: only update the specific fund
-    if (existing) {
-      const partialSet = new Set((existing.partial_funds || '').split(',').filter(Boolean))
-      partialSet.add(fund_key)
-      const newPartial = [...partialSet].join(',')
-      run(`UPDATE snapshots SET ${fund_key}=?,partial_funds=?,cash_pinned=? WHERE date=?`,
-        [req.body[fund_key], newPartial, pinned, date])
-      res.json({ id: existing.id })
-    } else {
-      const id = uid()
-      run(`INSERT INTO snapshots(id,date,${fund_key},partial_funds,cash_pinned) VALUES(?,?,?,?,?)`,
-        [id, date, req.body[fund_key], fund_key, pinned])
-      res.json({ id })
-    }
+  let snapId = existing?.id
+  if (existing) {
+    db.run('UPDATE snapshots SET cash=?,cash_set=?,cash_pinned=?,reconciled=? WHERE date=?',
+      [cashVal, cashSet, pinned, rec, date])
   } else {
-    // Full snapshot (all funds provided, or reconcile action)
-    if (existing) {
-      run('UPDATE snapshots SET cash=?,car=?,emergency=?,debt=?,home=?,cash_pinned=?,partial_funds=?,reconciled=? WHERE date=?',
-        [cash,car,emergency,debt,home,pinned,'',rec,date])
-      res.json({ id: existing.id })
-    } else {
-      const id = uid()
-      run('INSERT INTO snapshots(id,date,cash,car,emergency,debt,home,cash_pinned,partial_funds,reconciled) VALUES(?,?,?,?,?,?,?,?,?,?)',
-        [id,date,cash,car,emergency,debt,home,pinned,'',rec])
-      res.json({ id })
-    }
+    snapId = uid()
+    db.run('INSERT INTO snapshots(id,date,cash,cash_set,cash_pinned,reconciled) VALUES(?,?,?,?,?,?)',
+      [snapId, date, cashVal, cashSet, pinned, rec])
   }
+
+  if (balances && typeof balances === 'object') {
+    const byKey = Object.fromEntries(all('SELECT id,key FROM funds').map(f => [f.key, f.id]))
+    Object.entries(balances).forEach(([key, amount]) => {
+      if (!byKey[key]) return
+      db.run('INSERT OR REPLACE INTO snapshot_balances(snapshot_id,fund_id,amount) VALUES(?,?,?)',
+        [snapId, byKey[key], Number(amount) || 0])
+    })
+  }
+  persist()
+  res.json({ id: snapId })
 })
 
 // Debts (money borrowed — parallel to lends)

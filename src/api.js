@@ -8,6 +8,12 @@ const del  = (path) => fetch(BASE+path,{method:'DELETE'}).then(r=>r.json())
 export const api = {
   // Ledger
   getLedger: (from,to) => get(`/ledger?from=${from}&to=${to}`),
+  // Funds
+  getFunds: () => get('/funds'),
+  addFund: (data) => post('/funds', data),
+  updateFund: (id, data) => put(`/funds/${id}`, data),
+  deleteFund: (id) => del(`/funds/${id}`),
+  reorderFunds: (ids) => post('/funds/reorder', { ids }),
   // Rules
   getRules: () => get('/rules'),
   addRule: (data) => post('/rules',data),
