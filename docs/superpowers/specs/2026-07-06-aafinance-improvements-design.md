@@ -184,7 +184,29 @@ Charting: **Recharts** — the only new frontend dependency in this design.
 2. **Drift detection** — when a rule's matched actuals consistently differ (*"Rent rule is $480, actuals average $495 — update rule?"*), one-tap rule update.
 3. **Snapshot demotion** — imports become the primary reconciliation mechanism; manual snapshots remain for fund balances no bank export covers.
 
-## 10. API surface (delta)
+## 10. UX addendum (from live UX review, 2026-07-06)
+
+Findings from a UX review of the running app at desktop 1440px and mobile 390px. None conflict with the sections above; each item ships either in Phase 1 (standalone) or alongside its feature.
+
+### Hotfixes (trust traps)
+
+- **Fund modal day mismatch** — the modal pre-fills the *selected day's* projected value but always saves a snapshot for *today* (`FundModal.jsx`). Viewing 7 Jul and tapping Save writes tomorrow's projection over today's reconciliation. Fix: pre-fill with today's computed value, matching the "saves for today" copy. Phase 1.
+- **Reconcile toggle reads as checked when off** — the unchecked state renders a ☑️ emoji. Replace with a real checkbox/switch. Reconcile anchors all funds; its state must be unambiguous. Phase 1.
+
+### Design decisions
+
+- **Calendar legend + non-color encoding.** The header gains a compact legend beside the layer pills explaining chip/dot colors and, later, layer styling (solid / badged / ghosted). Chips get a +/− prefix or icon so type survives colorblindness. Legend for current encodings ships Phase 1; layer entries arrive with layer toggles.
+- **Chip legibility.** Day-cell chips render at minimum 11px, max 2–3 per cell + "+n more"; detail lives in the day panel. Phase 1.
+- **Labeled day balance.** The per-cell bottom-right figure is labeled as cash close (single label in the calendar header, not per cell). Phase 1.
+- **Mobile Today tab becomes a briefing.** Today's events and a 7-day upcoming strip render above the fund tiles. This surface later hosts the alert chips from §7 — one design, two phases. Phase 1 (events + upcoming); alerts with AI phase.
+- **Mobile add-transaction sheet.** When the form opens, the fund chips and day summary collapse and the action bar pins to the sheet bottom — Save is never below the fold. A one-line quick-add (amount + name; defaults Out/selected day) covers the common case. Phase 1.
+- **"Fund Management" panel renamed "Plan".** It holds rules, lends, and borrows — the manual layer *is* the plan (§2). "Manage" remains the mobile nav container (Plan, Funds, Import, Settings live inside it as features land). Phase 1.
+
+### Polish (Phase 1)
+
+Duplicate "(Sam) (Sam)" person suffix in rule rows; duplicate date header in the mobile day sheet; zero-balance funds sort last (interim until fund archiving in §4); favicon 404; bolder transition on the left-rail context label when tiles switch from TODAY to a selected day.
+
+## 11. API surface (delta)
 
 ```
 GET    /api/ledger?from&to&sources=manual,import,ai
@@ -201,14 +223,14 @@ GET    /api/dashboard?from&to  (aggregates for all widgets)
 GET/PUT /api/settings          (provider config, defaults)
 ```
 
-## 11. Error handling
+## 12. Error handling
 
 - **Import:** per-row parse errors surfaced in preview with reasons; commit is all-or-nothing per batch; batch delete = clean undo.
 - **AI:** timeouts/malformed responses degrade to heuristics or hide the feature; a failed forecast refresh leaves the previous AI batch untouched; provider errors surface as a toast, never a broken screen.
 - **Migration:** automatic timestamped backup before running; each step idempotent; failure aborts startup with the backup path printed.
 - **Engine:** unknown `sources` values rejected with 400; empty `sources` returns rules-off, transactions-off empty projection rather than erroring.
 
-## 12. Testing
+## 13. Testing
 
 The repo currently has no tests. This design introduces **Vitest** with:
 
@@ -219,14 +241,22 @@ The repo currently has no tests. This design introduces **Vitest** with:
 - **API integration** — supertest over the Express app with a throwaway in-memory db.
 - AI adapters tested against recorded JSON responses; schema validation rejects malformed payloads.
 
-## 13. Rollout phases
+## 14. Rollout phases
 
-Each phase independently shippable, in order:
+**Phase 1 — UX hotfixes & quick wins** (no schema changes; everything marked Phase 1 in §10):
 
-1. **Configurable funds** + schema migration + test harness bootstrap
-2. **Source tags + layer toggles** (engine `sources` support, UI pills)
-3. **Import pipeline** — sniff/map/preview/dedup/match/commit + trust surfacing
-4. **AI** — provider abstraction, categorisation, rule suggestions, forecast layer, insights & alerts
-5. **FY dashboard**
+- Fund modal day mismatch fix; real reconcile checkbox
+- Calendar legend, chip legibility (≥11px, max 2–3 + "+n more"), +/− chip encoding, labeled day balance
+- Mobile Today briefing (today's events + 7-day upcoming strip)
+- Mobile add-transaction sheet: collapse on form open, pinned action bar, one-line quick-add
+- "Fund Management" → "Plan" rename; polish list (suffix duplication, duplicate sheet header, zero-balance fund sort, favicon, context-label transition)
+
+**Phase 2 — feature build** (ordered sub-phases, each independently shippable):
+
+- **2.1 Configurable funds** + schema migration + test harness bootstrap
+- **2.2 Source tags + layer toggles** (engine `sources` support, UI pills, legend layer entries)
+- **2.3 Import pipeline** — sniff/map/preview/dedup/match/commit + trust surfacing
+- **2.4 AI** — provider abstraction, categorisation, rule suggestions, forecast layer, insights & alerts (alert chips land on the Today briefing)
+- **2.5 FY dashboard**
 
 Out of scope (explicitly): multi-user/auth, hosting/Supabase migration, budgets/envelopes beyond existing funds, mobile apps, bank API connections (import is file-based only).
