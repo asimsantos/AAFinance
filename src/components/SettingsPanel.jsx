@@ -40,7 +40,7 @@ function RuleRow({ rule, onEdit, onDelete }) {
           {rule.name}
           {rule.type === 'fund' && rule.fund_target && <span className="text-[11px] text-slate-500 ml-1">→ {FUND_LABEL[rule.fund_target] || rule.fund_target}</span>}
           {rule.type === 'expense' && rule.source_fund && <span className="text-[10px] text-blue-500 ml-1">from {FUND_LABEL[rule.source_fund] || rule.source_fund}</span>}
-          {rule.person && <span className="text-[10px] text-slate-400 ml-1">({rule.person})</span>}
+          {rule.person && !rule.name.includes(rule.person) && <span className="text-[10px] text-slate-400 ml-1">({rule.person})</span>}
         </p>
         <p className="text-[10px] text-slate-500 mt-0.5">
           {RECUR_LABEL[rule.recur] || rule.recur} · from {rule.start_date}

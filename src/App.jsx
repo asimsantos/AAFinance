@@ -113,18 +113,26 @@ export default function App() {
   const activeDebts   = debts.filter(d => !d.repaid)
   const totalBorrowed = activeDebts.reduce((s, d) => s + Math.max(0, d.amt - (d.paid_amt || 0)), 0)
 
+  // Cash first, then funded funds in declared order, zero-balance funds last
+  const orderedFunds = dayData => [
+    ...FUNDS.filter(f => f.key === 'cash'),
+    ...FUNDS.filter(f => f.key !== 'cash' && Math.round(dayData[f.key] ?? 0) !== 0),
+    ...FUNDS.filter(f => f.key !== 'cash' && Math.round(dayData[f.key] ?? 0) === 0),
+  ]
+
   // ── Reusable: fund balance cards for a given day's data ──────────
   const FundCards = ({ dayData, dateStr }) => {
     const isFuture = dateStr > todayStr
     return (
       <div className="p-3 space-y-1.5">
-        <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-0.5 select-none">
+        <p className={`text-[9px] font-bold uppercase tracking-widest pb-0.5 select-none transition-colors duration-300
+          ${dateStr === todayStr ? 'text-slate-400' : 'text-amber-600'}`}>
           {isFuture
             ? `Projected · ${dayjs(dateStr).format('D MMM')}`
             : dateStr === todayStr ? 'Today'
             : dayjs(dateStr).format('D MMM YYYY')}
         </p>
-        {FUNDS.map(f => {
+        {orderedFunds(dayData).map(f => {
           const v = dayData[f.key] ?? 0
           const neg = v < 0
           return (
@@ -373,7 +381,7 @@ export default function App() {
         {/* ── Fund balances: 3-column grid ── */}
         <div className="flex-shrink-0 border-b border-slate-100 px-3 py-2.5">
           <div className="grid grid-cols-3 gap-2">
-            {FUNDS.map(f => {
+            {orderedFunds(selData).map(f => {
               const v   = selData[f.key] ?? 0
               const neg = v < 0
               return (
