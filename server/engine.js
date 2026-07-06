@@ -1,7 +1,16 @@
 // ── LEDGER ENGINE ───────────────────────────────────────────────
-// Pure function: rows in, ledger out. No database access — callers
-// (the API route, tests) pass table rows. `snapshotBalances` and
-// `funds` are accepted for the funds-table transition (Task 3).
+// Pure function: rows in, ledger out. No database access.
+//
+// Funds are data: `funds` rows drive balance keys, auto-cover order
+// (ascending autocover_priority, NULL = never drawn, ties by
+// sort_order) and repayment (exact reverse). Snapshots anchor cash
+// when `cash_set` (or pinned) and anchor exactly the funds that have
+// `snapshot_balances` rows. A snapshot that sets cash plus every
+// non-archived fund is "full" and resets outstanding auto-cover debt.
+//
+// Day objects expose one balance per fund key at the top level
+// (dayData[fund.key]) — fund keys are validated against a reserved
+// list at the API layer so they can never collide with these fields.
 
 function ruleFiresOn(rule, dateStr) {
   if (dateStr < rule.start_date) return false
@@ -25,38 +34,55 @@ export function computeLedger({ from, to, rules = [], transactions = [], snapsho
   const allTxns = transactions
   const snaps   = [...snapshots].sort((a, b) => a.date.localeCompare(b.date))
 
-  const baseSnap = snaps.filter(s => s.date <= from).sort((a,b) => b.date.localeCompare(a.date))[0]
-    || { cash:0, car:0, emergency:0, debt:0, home:0 }
+  const fundById    = Object.fromEntries(funds.map(f => [f.id, f]))
+  const fundKeys    = funds.map(f => f.key)
+  const activeFunds = funds.filter(f => !f.archived)
 
-  // Determine the earliest date we must loop from so no events are ever dropped
-  // between the last known balance and the requested period.
-  //
-  // Case A — a snapshot exists before 'from': start the loop from that snapshot
-  //   date so every rule firing and transaction between snapshot→from is applied
-  //   (e.g. debt payments made in months that fall outside the 3-month lookback).
-  //
-  // Case B — no prior snapshot: anchor to the first in-range snapshot to avoid
-  //   balance values jumping from zero when the snapshot appears mid-loop.
+  // Balance rows grouped per snapshot: { snapshot_id: { fundKey: amount } }
+  const balsBySnap = {}
+  snapshotBalances.forEach(r => {
+    const f = fundById[r.fund_id]
+    if (!f) return
+    ;(balsBySnap[r.snapshot_id] ||= {})[f.key] = r.amount
+  })
+
+  // Auto-cover draw order; archived funds never participate.
+  const coverFunds = funds
+    .filter(f => f.autocover_priority != null && !f.archived)
+    .sort((a, b) => (a.autocover_priority - b.autocover_priority) || (a.sort_order - b.sort_order))
+  const repayFunds = [...coverFunds].reverse()
+
+  const baseSnap = snaps.filter(s => s.date <= from).at(-1) || null
+
+  // Loop start: see Case A/B — never drop events between the last known
+  // balance and the requested window.
   let loopFrom = from
-  if (baseSnap.date) {
+  if (baseSnap) {
     loopFrom = baseSnap.date
   } else {
-    const firstInRange = snaps.filter(s => s.date >= from && s.date <= to)
-      .sort((a, b) => a.date.localeCompare(b.date))[0]
+    const firstInRange = snaps.find(s => s.date >= from && s.date <= to)
     if (firstInRange) loopFrom = firstInRange.date
   }
 
-  // Transactions for the full computation window (loopFrom → to)
   const txns = allTxns.filter(t => t.date >= loopFrom && t.date <= to)
 
   const overrides = new Set(allTxns.filter(t => t.rule_id && !t.skip).map(t => `${t.rule_id}_${t.date}`))
   const skips     = new Set(allTxns.filter(t => t.skip).map(t => `${t.rule_id}_${t.date}`))
 
-  let cash = baseSnap.cash, car = baseSnap.car,
-      emergency = baseSnap.emergency, debt = baseSnap.debt, home = baseSnap.home
+  // Seed balances: overlay every snapshot at-or-before loopFrom in date
+  // order, so each fund starts from its nearest anchored value even when
+  // the most recent snapshot was partial.
+  let cash = 0
+  const bal = {}
+  fundKeys.forEach(k => { bal[k] = 0 })
+  snaps.filter(s => s.date <= loopFrom).forEach(s => {
+    if (s.cash_set || s.cash_pinned) cash = s.cash
+    const b = balsBySnap[s.id]
+    if (b) Object.entries(b).forEach(([k, v]) => { bal[k] = v })
+  })
 
-  // Track how much each fund has lent to cash via auto-cover so it can be repaid.
-  let autocoverOwed = { emergency: 0, debt: 0, home: 0, car: 0 }
+  let autocoverOwed = {}
+  fundKeys.forEach(k => { autocoverOwed[k] = 0 })
 
   const ledger = {}
   const d = new Date(loopFrom + 'T12:00:00')
@@ -66,19 +92,14 @@ export function computeLedger({ from, to, rules = [], transactions = [], snapsho
     const ds = d.toISOString().slice(0, 10)
 
     // Apply snapshot for this exact date.
-    // partial_funds: comma-separated list of funds set by this snapshot.
-    // An empty partial_funds means all funds are anchored (full snapshot).
     const daySnap = snaps.find(s => s.date === ds)
     if (daySnap) {
-      const partial = daySnap.partial_funds ? daySnap.partial_funds.split(',').filter(Boolean) : []
-      const full = partial.length === 0
-      if (full || partial.includes('cash'))      cash      = daySnap.cash
-      if (full || partial.includes('car'))       car       = daySnap.car
-      if (full || partial.includes('emergency')) emergency = daySnap.emergency
-      if (full || partial.includes('debt'))      debt      = daySnap.debt
-      if (full || partial.includes('home'))      home      = daySnap.home
-      // A full snapshot represents ground-truth — reset any outstanding auto-cover debt
-      if (full) autocoverOwed = { emergency: 0, debt: 0, home: 0, car: 0 }
+      if (daySnap.cash_set || daySnap.cash_pinned) cash = daySnap.cash
+      const b = balsBySnap[daySnap.id] || {}
+      Object.entries(b).forEach(([k, v]) => { bal[k] = v })
+      // Full snapshot (cash + every active fund) is ground-truth — reset auto-cover debt
+      const full = !!daySnap.cash_set && activeFunds.every(f => b[f.key] !== undefined)
+      if (full) fundKeys.forEach(k => { autocoverOwed[k] = 0 })
     }
 
     const openCash = cash   // cash before today's events
@@ -111,104 +132,52 @@ export function computeLedger({ from, to, rules = [], transactions = [], snapsho
         cash += ev.amt
       } else if (ev.type === 'expense') {
         // If a source fund is nominated, draw from it first then spill to cash
-        if (ev.source_fund) {
-          let remaining = ev.amt
-          const deductFrom = (key) => {
-            const bal = { car, emergency, debt, home }[key] || 0
-            const take = Math.min(bal, remaining)
-            if (take > 0) {
-              if (key === 'car')       car       -= take
-              if (key === 'emergency') emergency -= take
-              if (key === 'debt')      debt      -= take
-              if (key === 'home')      home      -= take
-              remaining -= take
-            }
-          }
-          deductFrom(ev.source_fund)
-          cash -= remaining   // remainder (can be 0 if fund covered it all)
+        if (ev.source_fund && ev.source_fund in bal) {
+          const take = Math.min(bal[ev.source_fund], ev.amt)
+          if (take > 0) bal[ev.source_fund] -= take
+          cash -= (ev.amt - take)   // remainder (can be 0 if fund covered it all)
         } else {
           cash -= ev.amt
         }
       } else if (ev.type === 'borrow') {
-        cash += ev.amt                               // cash in; debt fund unaffected
+        cash += ev.amt                               // cash in; funds unaffected
       } else if (ev.type === 'fund') {
         cash -= ev.amt
-        if      (ev.fund_target === 'car')       car += ev.amt
-        else if (ev.fund_target === 'emergency') emergency += ev.amt
-        else if (ev.fund_target === 'debt')      debt += ev.amt   // accumulates (like car/emergency)
-        else if (ev.fund_target === 'home')      home += ev.amt
+        if (ev.fund_target in bal) bal[ev.fund_target] += ev.amt
       } else if (ev.type === 'lend') {
         cash -= ev.amt
       } else if (ev.type === 'debtpay') {
-        debt -= ev.amt                               // payment from debt fund to creditor
+        // Payment from the debt fund to a creditor; falls back to cash
+        // if no 'debt'-keyed fund exists.
+        if ('debt' in bal) bal.debt -= ev.amt
+        else cash -= ev.amt
       }
     })
 
     // If cash is pinned on this snapshot, override any event-computed value
     if (daySnap?.cash_pinned) cash = daySnap.cash
 
-    // Auto-cover: when cash goes negative, draw from reserves in priority order:
-    //   1. Emergency  2. Debt fund  3. Tuition reserve  4. Car fund
+    // Auto-cover: when cash goes negative, draw from reserves in priority order
     if (cash < 0 && !daySnap?.cash_pinned) {
-      const fromEmergency = Math.min(emergency, -cash)
-      if (fromEmergency > 0) {
-        emergency -= fromEmergency; cash += fromEmergency
-        autocoverOwed.emergency += fromEmergency
-        events.push({ id: `ac_em_${ds}`, type: 'autocover', name: 'Emergency fund', amt: fromEmergency, fund_target: 'emergency', date: ds, source: 'autocover' })
-      }
-      if (cash < 0) {
-        const fromDebt = Math.min(debt, -cash)
-        if (fromDebt > 0) {
-          debt -= fromDebt; cash += fromDebt
-          autocoverOwed.debt += fromDebt
-          events.push({ id: `ac_debt_${ds}`, type: 'autocover', name: 'Debt fund', amt: fromDebt, fund_target: 'debt', date: ds, source: 'autocover' })
-        }
-      }
-      if (cash < 0) {
-        const fromHome = Math.min(home, -cash)
-        if (fromHome > 0) {
-          home -= fromHome; cash += fromHome
-          autocoverOwed.home += fromHome
-          events.push({ id: `ac_home_${ds}`, type: 'autocover', name: 'Tuition reserve', amt: fromHome, fund_target: 'home', date: ds, source: 'autocover' })
-        }
-      }
-      if (cash < 0) {
-        const fromCar = Math.min(car, -cash)
-        if (fromCar > 0) {
-          car -= fromCar; cash += fromCar
-          autocoverOwed.car += fromCar
-          events.push({ id: `ac_car_${ds}`, type: 'autocover', name: 'Car fund', amt: fromCar, fund_target: 'car', date: ds, source: 'autocover' })
+      for (const f of coverFunds) {
+        if (cash >= 0) break
+        const take = Math.min(bal[f.key], -cash)
+        if (take > 0) {
+          bal[f.key] -= take; cash += take
+          autocoverOwed[f.key] += take
+          events.push({ id: `ac_${f.key}_${ds}`, type: 'autocover', name: f.label, amt: take, fund_target: f.key, date: ds, source: 'autocover' })
         }
       }
     }
 
-    // Auto-cover recovery: repay in reverse draw order (Car → Home → Debt → Emergency)
-    if (cash > 0 && !daySnap?.cash_pinned &&
-        (autocoverOwed.emergency > 0 || autocoverOwed.debt > 0 || autocoverOwed.home > 0 || autocoverOwed.car > 0)) {
-      const repayCar = Math.min(autocoverOwed.car, cash)
-      if (repayCar > 0) {
-        car += repayCar; cash -= repayCar; autocoverOwed.car -= repayCar
-        events.push({ id: `acr_car_${ds}`, type: 'autocoverrepay', name: 'Car fund', amt: repayCar, fund_target: 'car', date: ds, source: 'autocover' })
-      }
-      if (cash > 0) {
-        const repayHome = Math.min(autocoverOwed.home, cash)
-        if (repayHome > 0) {
-          home += repayHome; cash -= repayHome; autocoverOwed.home -= repayHome
-          events.push({ id: `acr_home_${ds}`, type: 'autocoverrepay', name: 'Tuition reserve', amt: repayHome, fund_target: 'home', date: ds, source: 'autocover' })
-        }
-      }
-      if (cash > 0) {
-        const repayDebt = Math.min(autocoverOwed.debt, cash)
-        if (repayDebt > 0) {
-          debt += repayDebt; cash -= repayDebt; autocoverOwed.debt -= repayDebt
-          events.push({ id: `acr_debt_${ds}`, type: 'autocoverrepay', name: 'Debt fund', amt: repayDebt, fund_target: 'debt', date: ds, source: 'autocover' })
-        }
-      }
-      if (cash > 0) {
-        const repayEm = Math.min(autocoverOwed.emergency, cash)
-        if (repayEm > 0) {
-          emergency += repayEm; cash -= repayEm; autocoverOwed.emergency -= repayEm
-          events.push({ id: `acr_em_${ds}`, type: 'autocoverrepay', name: 'Emergency fund', amt: repayEm, fund_target: 'emergency', date: ds, source: 'autocover' })
+    // Auto-cover recovery: repay in reverse draw order
+    if (cash > 0 && !daySnap?.cash_pinned) {
+      for (const f of repayFunds) {
+        if (cash <= 0) break
+        const pay = Math.min(autocoverOwed[f.key] || 0, cash)
+        if (pay > 0) {
+          bal[f.key] += pay; cash -= pay; autocoverOwed[f.key] -= pay
+          events.push({ id: `acr_${f.key}_${ds}`, type: 'autocoverrepay', name: f.label, amt: pay, fund_target: f.key, date: ds, source: 'autocover' })
         }
       }
     }
@@ -221,7 +190,8 @@ export function computeLedger({ from, to, rules = [], transactions = [], snapsho
     const dayTransfer = events.filter(e => e.type === 'fund').reduce((s, e) => s + e.amt, 0)
 
     ledger[ds] = {
-      cash, car, emergency, debt, home,
+      cash,
+      ...Object.fromEntries(fundKeys.map(k => [k, bal[k]])),
       openCash,
       hasSnapshot:  !!daySnap,
       cash_pinned:  !!(daySnap?.cash_pinned),

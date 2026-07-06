@@ -192,8 +192,8 @@ app.get('/api/ledger', (req, res) => {
     rules:            all('SELECT * FROM rules'),
     transactions:     all('SELECT * FROM transactions'),
     snapshots:        all('SELECT * FROM snapshots ORDER BY date'),
-    snapshotBalances: [],
-    funds:            [],
+    snapshotBalances: all('SELECT * FROM snapshot_balances'),
+    funds:            all('SELECT * FROM funds ORDER BY sort_order'),
   }))
 })
 
