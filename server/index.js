@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { computeLedger } from './engine.js'
+import { migrate } from './migrate.js'
 import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -165,6 +166,13 @@ if (!existing || existing.c === 0) {
 
   persist()
   console.log('✅ Database seeded with demo data')
+}
+
+// ── FUNDS MIGRATION (one-shot, backs up the db file first) ──────
+const migration = migrate(db, { dbPath: DB_PATH, backupsDir: join(DATA_DIR, 'backups') })
+if (migration.ran) {
+  persist()
+  console.log(`✅ Migrated to funds schema${migration.backupPath ? ` (backup: ${migration.backupPath})` : ''}`)
 }
 
 // ── HELPERS ─────────────────────────────────────────────────────
