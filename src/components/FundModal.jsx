@@ -5,7 +5,9 @@ import { api } from '../api'
 export default function FundModal({ fund, ledger, onClose, onSaved }) {
   const today   = dayjs().format('YYYY-MM-DD')
   const todayLd = ledger[today] || {}
-  const [val,        setVal]        = useState(String(Math.round(fund.value)))
+  const [val,        setVal]        = useState(
+    todayLd[fund.key] != null ? String(Math.round(todayLd[fund.key])) : ''
+  )
   const [pinned,     setPinned]     = useState(!!(todayLd.cash_pinned))
   const [reconcile,  setReconcile]  = useState(false)
   const [saving,     setSaving]     = useState(false)
@@ -85,7 +87,10 @@ export default function FundModal({ fund, ledger, onClose, onSaved }) {
           onClick={() => setReconcile(r => !r)}
           className={`w-full mb-4 px-3 py-2.5 rounded-xl border text-left flex items-center gap-3 transition-colors
             ${reconcile ? 'bg-teal-50 border-teal-300' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'}`}>
-          <span className="text-base flex-shrink-0">{reconcile ? '✅' : '☑️'}</span>
+          <span className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 text-[12px] font-bold transition-colors
+            ${reconcile ? 'bg-teal-600 border-teal-600 text-white' : 'bg-white border-slate-300 text-transparent'}`}>
+            ✓
+          </span>
           <div>
             <p className={`text-[13px] font-bold ${reconcile ? 'text-teal-800' : 'text-slate-600'}`}>
               {reconcile ? 'Reconciled — all funds anchored' : 'Mark day as reconciled'}
