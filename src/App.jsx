@@ -6,6 +6,7 @@ import Calendar from './components/Calendar'
 import SidePanel from './components/SidePanel'
 import FundModal from './components/FundModal'
 import SettingsPanel from './components/SettingsPanel'
+import TodayBriefing from './components/TodayBriefing'
 
 const FUNDS = [
   { key: 'cash',      label: 'Cash',            color: '#065F46', bg: '#ECFDF5', border: '#A7F3D0' },
@@ -301,6 +302,10 @@ export default function App() {
           {/* ── Tab 1: TODAY ──────────────────────────────────────── */}
           {mobileTab === 'today' && (
             <div className="absolute inset-0 overflow-y-auto bg-white">
+              <TodayBriefing
+                ledger={ledger}
+                todayStr={todayStr}
+                onDayTap={ds => { setDay(ds); setMobileTab('calendar'); setDrawerOpen(true) }} />
               <LeftPanelContent dayData={todayData} dateStr={todayStr} />
             </div>
           )}
