@@ -4,16 +4,12 @@ import { api } from './api'
 import { useLedger } from './hooks/useLedger'
 import { useFunds } from './hooks/useFunds'
 import { CASH } from './fundStyle'
+import { fmt } from './money'
 import Calendar from './components/Calendar'
 import SidePanel from './components/SidePanel'
 import FundModal from './components/FundModal'
 import SettingsPanel from './components/SettingsPanel'
 import TodayBriefing from './components/TodayBriefing'
-
-function fmt(n) {
-  const abs = Math.abs(Math.round(n))
-  return (n < 0 ? '-$' : '$') + abs.toLocaleString('en-AU')
-}
 
 // ── Mobile bottom nav tab definitions ────────────────────────────
 const MOBILE_TABS = [
@@ -135,7 +131,7 @@ export default function App() {
           const neg = v < 0
           return (
             <button key={f.key}
-              onClick={() => setFundModal({ key: f.key, label: f.label, value: v })}
+              onClick={() => setFundModal({ key: f.key, label: f.label })}
               className="w-full text-left rounded-xl px-3 py-2.5 transition-all hover:brightness-95 active:scale-[.98]"
               style={{ background: f.bg, border: `1.5px solid ${f.border}` }}>
               <div className="text-[9px] font-bold uppercase tracking-widest flex items-center gap-1" style={{ color: f.color }}>
@@ -390,7 +386,7 @@ export default function App() {
               const neg = v < 0
               return (
                 <button key={f.key}
-                  onClick={() => setFundModal({ key: f.key, label: f.label, value: v })}
+                  onClick={() => setFundModal({ key: f.key, label: f.label })}
                   className="rounded-xl px-2.5 py-2 text-left transition-all hover:brightness-95 active:scale-[.98]"
                   style={{ background: f.bg, border: `1.5px solid ${f.border}` }}>
                   <div className="text-[8px] font-bold uppercase tracking-widest flex items-center gap-0.5 truncate"
@@ -489,7 +485,7 @@ export default function App() {
         <FundModal
           fund={fundModal}
           ledger={ledger}
-          activeFunds={activeFunds}
+          funds={funds}
           onClose={() => setFundModal(null)}
           onSaved={() => { setFundModal(null); refresh() }} />
       )}

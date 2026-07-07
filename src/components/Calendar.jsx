@@ -1,21 +1,9 @@
 import React from 'react'
 import dayjs from 'dayjs'
+import { fmt } from '../money'
+import { LEGEND } from '../eventTypes'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-
-const LEGEND = [
-  { color: 'bg-emerald-500', label: 'In' },
-  { color: 'bg-red-400',     label: 'Out' },
-  { color: 'bg-blue-400',    label: 'Transfer' },
-  { color: 'bg-violet-400',  label: 'Lend' },
-  { color: 'bg-amber-500',   label: 'Auto-cover' },
-  { color: 'bg-teal-600',    label: 'Reconciled' },
-]
-
-function fmt(n) {
-  const abs = Math.abs(Math.round(n))
-  return (n < 0 ? '-$' : '$') + abs.toLocaleString('en-AU')
-}
 
 export default function Calendar({ year, month, ledger, selectedDay, onDayClick }) {
   const today    = dayjs().format('YYYY-MM-DD')

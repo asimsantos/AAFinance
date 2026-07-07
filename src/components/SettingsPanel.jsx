@@ -1,11 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import dayjs from 'dayjs'
 import { api } from '../api'
-
-function fmt(n) {
-  const abs = Math.abs(Math.round(n))
-  return (n < 0 ? '-$' : '$') + abs.toLocaleString('en-AU')
-}
+import { fmt } from '../money'
+import { fundLabel as fundLabelOf } from '../fundStyle'
 
 const TYPE_COLOR = {
   income:  { bg: '#ECFDF5', border: '#A7F3D0', text: '#065F46', dot: '#059669' },
@@ -514,7 +511,7 @@ function FundForm({ fund, onSave, onDelete, onCancel }) {
 // ── Main settings panel ───────────────────────────────────────────
 export default function SettingsPanel({ onUpdate, debtFundBalance = 0, funds = [], onFundsChange }) {
   const activeFunds = funds.filter(f => !f.archived)
-  const fundLabel   = key => funds.find(f => f.key === key)?.label || key
+  const fundLabel   = key => fundLabelOf(funds, key)
   const [tab,         setTab]         = useState('income')
   const [rules,       setRules]       = useState([])
   const [lends,       setLends]       = useState([])
@@ -736,6 +733,12 @@ export default function SettingsPanel({ onUpdate, debtFundBalance = 0, funds = [
                 </div>
 
                 <p className="text-[10px] text-slate-400 px-0.5">Tap a record to pay from debt fund · ✏ to edit</p>
+
+                {!funds.some(f => f.key === 'debt' && !f.archived) && (
+                  <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                    ⚠ No "Debt" fund exists right now — debt payments come straight out of cash.
+                  </p>
+                )}
 
                 {debts.map(d => (
                   <DebtRow key={d.id} debt={d}

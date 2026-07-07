@@ -2,6 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import { computeLedger } from './engine.js'
 import { migrate } from './migrate.js'
+import { rows } from './db.js'
 import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -35,12 +36,7 @@ function run(sql, params = []) {
 }
 
 function all(sql, params = []) {
-  const stmt = db.prepare(sql)
-  stmt.bind(params)
-  const rows = []
-  while (stmt.step()) rows.push(stmt.getAsObject())
-  stmt.free()
-  return rows
+  return rows(db, sql, params)
 }
 
 function get(sql, params = []) {
@@ -200,7 +196,7 @@ app.get('/api/ledger', (req, res) => {
 // Funds
 // Day objects spread fund balances by key, so keys may never collide
 // with the ledger's own fields.
-const RESERVED_FUND_KEYS = ['cash', 'openCash', 'events', 'dayIn', 'daySpend', 'dayTransfer', 'dayOut', 'hasSnapshot', 'cash_pinned', 'reconciled', 'autocoverOwed']
+const RESERVED_FUND_KEYS = ['cash', 'openCash', 'events', 'dayIn', 'daySpend', 'dayTransfer', 'dayOut', 'hasSnapshot', 'cash_anchored', 'cash_pinned', 'reconciled', 'autocoverOwed']
 
 function fundReferenced(id, key) {
   return !!(
@@ -220,7 +216,15 @@ function slugKey(label) {
 
 app.get('/api/funds', (_, res) => {
   const funds = all('SELECT * FROM funds ORDER BY sort_order')
-  res.json(funds.map(f => ({ ...f, referenced: fundReferenced(f.id, f.key) ? 1 : 0 })))
+  // Grouped reference lookup — constant query count regardless of fund count
+  const refKeys = new Set(all(`
+    SELECT fund_target k FROM rules        WHERE fund_target != ''
+    UNION SELECT source_fund FROM rules        WHERE source_fund != ''
+    UNION SELECT fund_target FROM transactions WHERE fund_target != ''
+    UNION SELECT source_fund FROM transactions WHERE source_fund != ''
+  `).map(r => r.k))
+  const refIds = new Set(all('SELECT DISTINCT fund_id i FROM snapshot_balances').map(r => r.i))
+  res.json(funds.map(f => ({ ...f, referenced: (refKeys.has(f.key) || refIds.has(f.id)) ? 1 : 0 })))
 })
 app.post('/api/funds', (req, res) => {
   const { label, color, target, autocover_priority } = req.body
@@ -347,6 +351,15 @@ app.post('/api/snapshots', (req, res) => {
         [snapId, byKey[key], Number(amount) || 0])
     })
   }
+
+  // Freeze fullness at write time: anchors cash + every currently-active
+  // fund → ground truth that resets auto-cover debt. Frozen here so later
+  // fund additions can't retroactively demote this snapshot.
+  const active = all('SELECT id FROM funds WHERE archived=0')
+  const have = new Set(all('SELECT fund_id FROM snapshot_balances WHERE snapshot_id=?', [snapId]).map(r => r.fund_id))
+  const isFull = (cashSet && active.every(f => have.has(f.id))) ? 1 : 0
+  db.run('UPDATE snapshots SET is_full=? WHERE id=?', [isFull, snapId])
+
   persist()
   res.json({ id: snapId })
 })

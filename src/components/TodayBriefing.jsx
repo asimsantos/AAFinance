@@ -1,21 +1,8 @@
 import React from 'react'
 import dayjs from 'dayjs'
+import { fmt } from '../money'
+import { EVENT_TYPES } from '../eventTypes'
 
-const EVENT_META = {
-  income:         { sign: '+', color: 'text-emerald-700', dot: 'bg-emerald-500' },
-  borrow:         { sign: '+', color: 'text-orange-700',  dot: 'bg-orange-500' },
-  expense:        { sign: '−', color: 'text-red-600',     dot: 'bg-red-400' },
-  fund:           { sign: '−', color: 'text-blue-700',    dot: 'bg-blue-400' },
-  lend:           { sign: '−', color: 'text-violet-700',  dot: 'bg-violet-400' },
-  autocover:      { sign: '−', color: 'text-amber-700',   dot: 'bg-amber-500' },
-  autocoverrepay: { sign: '+', color: 'text-teal-700',    dot: 'bg-teal-500' },
-  debtpay:        { sign: '−', color: 'text-blue-700',    dot: 'bg-blue-600' },
-}
-
-function fmt(n) {
-  const abs = Math.abs(Math.round(n))
-  return (n < 0 ? '-$' : '$') + abs.toLocaleString('en-AU')
-}
 
 export default function TodayBriefing({ ledger, todayStr, onDayTap }) {
   const todayEvents = (ledger[todayStr]?.events) || []
@@ -38,12 +25,12 @@ export default function TodayBriefing({ ledger, todayStr, onDayTap }) {
         ) : (
           <div className="space-y-1">
             {todayEvents.map((ev, i) => {
-              const m = EVENT_META[ev.type] || EVENT_META.expense
+              const m = EVENT_TYPES[ev.type] || EVENT_TYPES.expense
               return (
                 <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-slate-100 bg-white">
                   <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${m.dot}`} />
                   <span className="flex-1 text-[12px] font-semibold text-slate-700 truncate">{ev.name}</span>
-                  <span className={`text-[12px] font-bold flex-shrink-0 ${m.color}`}>{m.sign}{fmt(ev.amt)}</span>
+                  <span className={`text-[12px] font-bold flex-shrink-0 ${m.text}`}>{m.sign}{fmt(ev.amt)}</span>
                 </div>
               )
             })}

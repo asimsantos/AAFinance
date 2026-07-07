@@ -9,10 +9,11 @@ const FUNDS = [
   { id: 'f_home',      key: 'home',      label: 'Tuition reserve', color: '#6D28D9', sort_order: 3, autocover_priority: 3, target: null, archived: 0 },
 ]
 
-// Full snapshot: cash + one balance row per fund
+// Full snapshot: cash + one balance row per fund, is_full frozen at
+// write time (as POST /api/snapshots and the migration stamp it)
 function fullSnap(id, date, cash, balances, extra = {}) {
   return {
-    snapshot: { id, date, cash, cash_set: 1, cash_pinned: 0, reconciled: 0, ...extra },
+    snapshot: { id, date, cash, cash_set: 1, cash_pinned: 0, reconciled: 0, is_full: 1, ...extra },
     balances: Object.entries(balances).map(([key, amount]) => ({ snapshot_id: id, fund_id: `f_${key}`, amount })),
   }
 }
@@ -52,6 +53,24 @@ describe('characterization: seed scenario', () => {
     expect(ledger['2026-07-01'].emergency).toBe(1500)
     expect(ledger['2026-07-01'].debt).toBe(0)
     expect(ledger['2026-07-01'].home).toBe(0)
+  })
+})
+
+describe('reconcile anchors close of day', () => {
+  it('reconciling a day WITH events does not double-count them', () => {
+    // The fund modal saves today's tile values (close of day). 7 Jul has
+    // +1100 salary, −90, −130: open 450 → close 1330. Anchoring 1330 must
+    // yield close 1330, not 450→(snapshot 1330)→+880 = 2210.
+    const recon = fullSnap('s2', '2026-07-07', 1330, { car: 2800, emergency: 1500, debt: 0, home: 0 }, { reconciled: 1 })
+    const ledger = run({
+      snapshots: [SEED.snapshot, recon.snapshot],
+      snapshotBalances: [...SEED.balances, ...recon.balances],
+    })
+    expect(ledger['2026-07-07'].openCash).toBe(450)
+    expect(ledger['2026-07-07'].cash).toBe(1330)          // anchored close
+    expect(ledger['2026-07-07'].cash_anchored).toBe(true)
+    expect(ledger['2026-07-07'].events.length).toBe(3)    // events still shown
+    expect(ledger['2026-07-08'].openCash).toBe(1330)      // carry-forward from anchor
   })
 })
 
@@ -134,22 +153,39 @@ describe('auto-cover', () => {
     expect(ledger['2026-07-15'].autocoverOwed).toEqual({ emergency: 0, debt: 0, home: 0, car: 0 })
   })
 
-  it('a snapshot missing an active fund does NOT reset auto-cover debt', () => {
-    const partialReset = {
-      snapshot: { id: 's2', date: '2026-07-15', cash: 2000, cash_set: 1, cash_pinned: 1, reconciled: 0 },
+  it('a snapshot not stamped is_full does NOT reset auto-cover debt, even if it covers everything', () => {
+    const notStamped = {
+      snapshot: { id: 's2', date: '2026-07-15', cash: 2000, cash_set: 1, cash_pinned: 1, reconciled: 0, is_full: 0 },
       balances: [
         { snapshot_id: 's2', fund_id: 'f_car', amount: 500 },
         { snapshot_id: 's2', fund_id: 'f_emergency', amount: 800 },
         { snapshot_id: 's2', fund_id: 'f_debt', amount: 700 },
-        // home missing → not a full snapshot
+        { snapshot_id: 's2', fund_id: 'f_home', amount: 600 },
       ],
     }
     const ledger = run({
       rules: [], transactions: [bigExpense],
-      snapshots: [SNAP.snapshot, partialReset.snapshot],
-      snapshotBalances: [...SNAP.balances, ...partialReset.balances],
+      snapshots: [SNAP.snapshot, notStamped.snapshot],
+      snapshotBalances: [...SNAP.balances, ...notStamped.balances],
     })
     expect(ledger['2026-07-15'].autocoverOwed.emergency).toBe(800)
+  })
+
+  it('a stored full snapshot keeps resetting after a new fund is added later', () => {
+    // The reset snapshot was frozen full when only the four seeded funds
+    // existed; the Holiday fund added afterwards has no balance row there.
+    const withHoliday = [...FUNDS,
+      { id: 'f_holiday', key: 'holiday', label: 'Holiday', color: '#DB2777', sort_order: 4, autocover_priority: null, target: 3000, archived: 0 }]
+    const reset = fullSnap('s2', '2026-07-15', 2000, { car: 500, emergency: 800, debt: 700, home: 600 })
+    const ledger = run({
+      funds: withHoliday,
+      rules: [], transactions: [bigExpense],
+      snapshots: [SNAP.snapshot, reset.snapshot],
+      snapshotBalances: [...SNAP.balances, ...reset.balances],
+    })
+    expect(ledger['2026-07-14'].autocoverOwed.emergency).toBe(800)
+    expect(ledger['2026-07-15'].autocoverOwed.emergency).toBe(0)   // still ground truth
+    expect(ledger['2026-07-15'].holiday).toBe(0)                   // new fund simply carries its value
   })
 })
 
@@ -194,6 +230,34 @@ describe('snapshots', () => {
     expect(ledger['2026-07-01'].car).toBe(5555)
     expect(ledger['2026-07-01'].emergency).toBe(900)
     expect(ledger['2026-07-01'].cash).toBe(1000)
+  })
+})
+
+describe('recurrence clamping', () => {
+  const baseSnap = { id: 's1', date: '2026-01-31', cash: 10000, cash_set: 1, cash_pinned: 0, reconciled: 0, is_full: 0 }
+  const rentRule = (start, recur) => [{ id: 'r1', type: 'expense', name: 'Rent', amt: 100, start_date: start, end_date: '', recur, fund_target: '', source_fund: '' }]
+
+  it('monthly rule starting on the 31st fires on the last day of shorter months', () => {
+    const ledger = computeLedger({
+      from: '2026-02-01', to: '2026-04-30',
+      rules: rentRule('2026-01-31', 'monthly'), transactions: [],
+      snapshots: [baseSnap], snapshotBalances: [], funds: FUNDS,
+    })
+    expect(ledger['2026-02-28'].events.map(e => e.name)).toEqual(['Rent'])   // Feb has no 31st
+    expect(ledger['2026-02-27'].events).toHaveLength(0)
+    expect(ledger['2026-03-31'].events.map(e => e.name)).toEqual(['Rent'])
+    expect(ledger['2026-04-30'].events.map(e => e.name)).toEqual(['Rent'])   // Apr has no 31st
+    expect(ledger['2026-04-29'].events).toHaveLength(0)
+  })
+
+  it('yearly rule starting on Feb 29 fires on Feb 28 in non-leap years', () => {
+    const ledger = computeLedger({
+      from: '2026-02-01', to: '2026-03-05',
+      rules: rentRule('2024-02-29', 'yearly'), transactions: [],
+      snapshots: [{ ...baseSnap, date: '2026-01-15' }], snapshotBalances: [], funds: FUNDS,
+    })
+    expect(ledger['2026-02-28'].events.map(e => e.name)).toEqual(['Rent'])
+    expect(ledger['2026-03-01'].events).toHaveLength(0)
   })
 })
 

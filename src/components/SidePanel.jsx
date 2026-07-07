@@ -1,17 +1,10 @@
 import React, { useState, useEffect } from 'react'
 import dayjs from 'dayjs'
 import { api } from '../api'
+import { fmt } from '../money'
+import { EVENT_TYPES } from '../eventTypes'
+import { fundLabel as fundLabelOf } from '../fundStyle'
 
-const TYPE_CFG = {
-  income:        { label: 'Income',   sign: '+', color: '#065F46', dot: 'bg-emerald-500' },
-  expense:       { label: 'Expense',  sign: '-', color: '#B91C1C', dot: 'bg-red-400' },
-  fund:          { label: 'Fund',     sign: '-', color: '#1D4ED8', dot: 'bg-blue-400' },
-  lend:          { label: 'Lend',     sign: '-', color: '#6D28D9', dot: 'bg-violet-400' },
-  borrow:        { label: 'Borrow',   sign: '+', color: '#9A3412', dot: 'bg-orange-500' },
-  autocover:     { label: 'Cover',    sign: '-', color: '#92400E', dot: 'bg-amber-500' },
-  autocoverrepay:{ label: 'Repay',    sign: '+', color: '#0F766E', dot: 'bg-teal-500' },
-  debtpay:       { label: 'Debt pay', sign: '-', color: '#1E40AF', dot: 'bg-blue-600' },
-}
 
 const RECUR_OPTIONS = [
   { value: 'once',        label: 'One time' },
@@ -26,16 +19,12 @@ const SCOPE_OPTIONS = [
   { value: 'all',  label: 'All occurrences' },
 ]
 
-function fmt(n) {
-  return '$' + Math.abs(Math.round(n)).toLocaleString('en-AU')
-}
-
 const inp = 'w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-emerald-400 bg-white'
 
 // ── Transaction create / edit form ────────────────────────────────
 function TxForm({ dateStr, editEvent, editRuleId, activeFunds = [], onSaved, onCancel }) {
   const isEdit     = !!editEvent
-  const isRuleEdit = isEdit && editEvent.source === 'rule'
+  const isRuleEdit = isEdit && editEvent.origin === 'rule'
 
   const [type,       setType]       = useState(editEvent?.type        || 'expense')
   const [name,       setName]       = useState(editEvent?.name        || '')
@@ -96,7 +85,7 @@ function TxForm({ dateStr, editEvent, editRuleId, activeFunds = [], onSaved, onC
             return_date: returnDate || '',
           })
         }
-      } else if (isEdit && editEvent.source === 'tx') {
+      } else if (isEdit && editEvent.origin === 'tx') {
         await api.updateTransaction(editEvent.id, {
           type, name, amt: a, date,
           fund_target: type === 'fund' ? (fundTarget || '') : '',
@@ -270,7 +259,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate, funds = [], isShe
   const [editEvent, setEditEvent] = useState(null)
 
   const activeFunds = funds.filter(f => !f.archived)
-  const fundLabel   = key => funds.find(f => f.key === key)?.label || key
+  const fundLabel   = key => fundLabelOf(funds, key)
 
   const formOpen = adding || !!editEvent
   useEffect(() => { onFormOpenChange?.(formOpen) }, [formOpen])
@@ -305,8 +294,10 @@ export default function SidePanel({ dateStr, ledger, onUpdate, funds = [], isShe
     return s
   }, 0)
   const displayClose   = openCash !== null ? openCash + netFromEvents : null
-  const pinnedClose    = ld.cash_pinned ? (ld.cash ?? null) : null   // actual carry-forward when different
-  const showPinnedNote = pinnedClose !== null && Math.round(pinnedClose) !== Math.round(displayClose ?? 0)
+  // Actual carry-forward when a snapshot anchors (or pins) cash to a
+  // different value than the event math produces
+  const anchorClose    = ld.cash_anchored ? (ld.cash ?? null) : null
+  const showAnchorNote = anchorClose !== null && Math.round(anchorClose) !== Math.round(displayClose ?? 0)
 
   return (
     <div className="flex flex-col h-full">
@@ -352,11 +343,11 @@ export default function SidePanel({ dateStr, ledger, onUpdate, funds = [], isShe
                 </span>
               </div>
             ))}
-            {showPinnedNote && (
+            {showAnchorNote && (
               <div className="flex justify-between items-center px-3 py-1 bg-amber-50 border-t border-amber-100">
-                <span className="text-[9px] text-amber-600">Carry-forward pinned to</span>
+                <span className="text-[9px] text-amber-600">{ld.cash_pinned ? 'Carry-forward pinned to' : 'Anchored to'}</span>
                 <span className="text-[10px] font-bold text-amber-700">
-                  {(pinnedClose??0) < 0 ? '-$' : '$'}{Math.abs(Math.round(pinnedClose??0)).toLocaleString('en-AU')}
+                  {(anchorClose??0) < 0 ? '-$' : '$'}{Math.abs(Math.round(anchorClose??0)).toLocaleString('en-AU')}
                 </span>
               </div>
             )}
@@ -394,7 +385,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate, funds = [], isShe
         {events.length === 0 && !adding ? (
           <p className="text-center text-slate-400 text-sm py-8">No transactions on this day</p>
         ) : events.map((ev, i) => {
-          const cfg       = TYPE_CFG[ev.type] || TYPE_CFG.expense
+          const cfg       = EVENT_TYPES[ev.type] || EVENT_TYPES.expense
           const isIncome  = ev.type === 'income' || ev.type === 'borrow'
           const isCover   = ev.type === 'autocover'
           const isRepay   = ev.type === 'autocoverrepay'
@@ -469,7 +460,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate, funds = [], isShe
                       {ev.name}{ev.type === 'fund' && ev.fund_target ? ` → ${fundLabel(ev.fund_target)}` : ''}
                     </p>
                     <p className="text-[10px] text-slate-400 mt-0.5">
-                      {ev.source === 'rule' ? `Recurring · ${ev.recur}` : ev.type === 'borrow' ? 'Borrowed' : 'One-off'}
+                      {ev.origin === 'rule' ? `Recurring · ${ev.recur}` : ev.type === 'borrow' ? 'Borrowed' : 'One-off'}
                       {ev.source_fund ? ` · from ${fundLabel(ev.source_fund)}` : ''}
                       {isFuture ? ' · projected' : ''}
                     </p>

@@ -14,3 +14,8 @@ export function tint(hex, ratio) {
 
 // Decorate a funds-table row with the tile/border tints the UI uses.
 export const fundStyle = f => ({ ...f, bg: tint(f.color, 0.93), border: tint(f.color, 0.72) })
+
+// Label lookup by fund key; falls back to the raw key for funds that
+// no longer exist.
+export const fundLabel = (funds, key) => funds.find(f => f.key === key)?.label || key
+

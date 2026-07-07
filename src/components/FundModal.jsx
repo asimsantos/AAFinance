@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import dayjs from 'dayjs'
 import { api } from '../api'
 
-export default function FundModal({ fund, ledger, activeFunds = [], onClose, onSaved }) {
+export default function FundModal({ fund, ledger, funds = [], onClose, onSaved }) {
   const today   = dayjs().format('YYYY-MM-DD')
   const todayLd = ledger[today] || {}
   const [val,        setVal]        = useState(
@@ -19,11 +19,12 @@ export default function FundModal({ fund, ledger, activeFunds = [], onClose, onS
     const numVal = parseFloat(val) || 0
     try {
       if (reconcile) {
-        // Full snapshot: anchor cash + every active fund to today's values, mark reconciled
+        // Full snapshot: anchor cash + every fund (archived included, so
+        // their balances can't drift unanchored) to today's values.
         await api.upsertSnapshot({
           date: today,
           cash: isCash ? numVal : (todayLd.cash ?? 0),
-          balances: Object.fromEntries(activeFunds.map(f =>
+          balances: Object.fromEntries(funds.map(f =>
             [f.key, f.key === fund.key ? numVal : (todayLd[f.key] ?? 0)])),
           cash_pinned: pinned,
           reconciled: true,
