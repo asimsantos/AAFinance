@@ -2,23 +2,14 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import dayjs from 'dayjs'
 import { api } from './api'
 import { useLedger } from './hooks/useLedger'
+import { useFunds } from './hooks/useFunds'
+import { CASH } from './fundStyle'
+import { fmt } from './money'
 import Calendar from './components/Calendar'
 import SidePanel from './components/SidePanel'
 import FundModal from './components/FundModal'
 import SettingsPanel from './components/SettingsPanel'
-
-const FUNDS = [
-  { key: 'cash',      label: 'Cash',            color: '#065F46', bg: '#ECFDF5', border: '#A7F3D0' },
-  { key: 'car',       label: 'Car fund',         color: '#1D4ED8', bg: '#EFF6FF', border: '#BFDBFE' },
-  { key: 'emergency', label: 'Emergency',        color: '#047857', bg: '#F0FDF4', border: '#BBF7D0' },
-  { key: 'debt',      label: 'Debt Fund',        color: '#1E40AF', bg: '#EFF6FF', border: '#BFDBFE' },
-  { key: 'home',      label: 'Tuition reserve',  color: '#6D28D9', bg: '#F5F3FF', border: '#DDD6FE' },
-]
-
-function fmt(n) {
-  const abs = Math.abs(Math.round(n))
-  return (n < 0 ? '-$' : '$') + abs.toLocaleString('en-AU')
-}
+import TodayBriefing from './components/TodayBriefing'
 
 // ── Mobile bottom nav tab definitions ────────────────────────────
 const MOBILE_TABS = [
@@ -55,6 +46,7 @@ export default function App() {
   const [fundModal,   setFundModal] = useState(null)
   const [mobileTab,   setMobileTab] = useState('today')
   const [drawerOpen,  setDrawerOpen] = useState(false)
+  const [sheetFormOpen, setSheetFormOpen] = useState(false)
 
   const TAB_ORDER = ['today', 'calendar', 'manage']
   const swipeRef  = useRef(null)
@@ -74,10 +66,12 @@ export default function App() {
   }
 
   const { ledger, loading, reload } = useLedger(year, month)
+  const { funds, activeFunds, reloadFunds } = useFunds()
   const loadLends = async () => setLends(await api.getLends())
   const loadDebts = async () => setDebts(await api.getDebts())
   useEffect(() => { loadLends(); loadDebts() }, [])
   const refresh = () => { reload(); loadLends(); loadDebts() }
+  const handleFundsChange = () => { reloadFunds(); reload() }
 
   const changeMonth = dir => {
     let m = month + dir, y = year
@@ -113,23 +107,31 @@ export default function App() {
   const activeDebts   = debts.filter(d => !d.repaid)
   const totalBorrowed = activeDebts.reduce((s, d) => s + Math.max(0, d.amt - (d.paid_amt || 0)), 0)
 
+  // Cash first, then funded funds in configured order, zero-balance funds last
+  const orderedFunds = dayData => [
+    CASH,
+    ...activeFunds.filter(f => Math.round(dayData[f.key] ?? 0) !== 0),
+    ...activeFunds.filter(f => Math.round(dayData[f.key] ?? 0) === 0),
+  ]
+
   // ── Reusable: fund balance cards for a given day's data ──────────
   const FundCards = ({ dayData, dateStr }) => {
     const isFuture = dateStr > todayStr
     return (
       <div className="p-3 space-y-1.5">
-        <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-0.5 select-none">
+        <p className={`text-[9px] font-bold uppercase tracking-widest pb-0.5 select-none transition-colors duration-300
+          ${dateStr === todayStr ? 'text-slate-400' : 'text-amber-600'}`}>
           {isFuture
             ? `Projected · ${dayjs(dateStr).format('D MMM')}`
             : dateStr === todayStr ? 'Today'
             : dayjs(dateStr).format('D MMM YYYY')}
         </p>
-        {FUNDS.map(f => {
+        {orderedFunds(dayData).map(f => {
           const v = dayData[f.key] ?? 0
           const neg = v < 0
           return (
             <button key={f.key}
-              onClick={() => setFundModal({ key: f.key, label: f.label, value: v })}
+              onClick={() => setFundModal({ key: f.key, label: f.label })}
               className="w-full text-left rounded-xl px-3 py-2.5 transition-all hover:brightness-95 active:scale-[.98]"
               style={{ background: f.bg, border: `1.5px solid ${f.border}` }}>
               <div className="text-[9px] font-bold uppercase tracking-widest flex items-center gap-1" style={{ color: f.color }}>
@@ -292,6 +294,10 @@ export default function App() {
           {/* ── Tab 1: TODAY ──────────────────────────────────────── */}
           {mobileTab === 'today' && (
             <div className="absolute inset-0 overflow-y-auto bg-white">
+              <TodayBriefing
+                ledger={ledger}
+                todayStr={todayStr}
+                onDayTap={ds => { setDay(ds); setMobileTab('calendar'); setDrawerOpen(true) }} />
               <LeftPanelContent dayData={todayData} dateStr={todayStr} />
             </div>
           )}
@@ -314,7 +320,8 @@ export default function App() {
           {/* ── Tab 3: MANAGE ─────────────────────────────────────── */}
           {mobileTab === 'manage' && (
             <div className="absolute inset-0 overflow-hidden flex flex-col bg-white">
-              <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0} />
+              <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0}
+                funds={funds} onFundsChange={handleFundsChange} />
             </div>
           )}
         </div>
@@ -370,15 +377,16 @@ export default function App() {
           </button>
         </div>
 
-        {/* ── Fund balances: 3-column grid ── */}
+        {/* ── Fund balances: 3-column grid — collapses while the form is open ── */}
+        {!sheetFormOpen && (
         <div className="flex-shrink-0 border-b border-slate-100 px-3 py-2.5">
           <div className="grid grid-cols-3 gap-2">
-            {FUNDS.map(f => {
+            {orderedFunds(selData).map(f => {
               const v   = selData[f.key] ?? 0
               const neg = v < 0
               return (
                 <button key={f.key}
-                  onClick={() => setFundModal({ key: f.key, label: f.label, value: v })}
+                  onClick={() => setFundModal({ key: f.key, label: f.label })}
                   className="rounded-xl px-2.5 py-2 text-left transition-all hover:brightness-95 active:scale-[.98]"
                   style={{ background: f.bg, border: `1.5px solid ${f.border}` }}>
                   <div className="text-[8px] font-bold uppercase tracking-widest flex items-center gap-0.5 truncate"
@@ -408,6 +416,7 @@ export default function App() {
             )}
           </div>
         </div>
+        )}
 
         {/* ── Day detail ── */}
         <div className="flex-1 overflow-y-auto">
@@ -415,6 +424,9 @@ export default function App() {
             dateStr={selectedDay}
             ledger={ledger}
             lends={lends}
+            funds={funds}
+            isSheet
+            onFormOpenChange={setSheetFormOpen}
             onUpdate={() => { setDrawerOpen(false); refresh() }} />
         </div>
       </div>
@@ -447,7 +459,7 @@ export default function App() {
           <div className="flex border-b border-slate-200 flex-shrink-0 bg-white">
             {[
               { key: 'day',   label: 'Day detail' },
-              { key: 'rules', label: 'Fund Management' },
+              { key: 'rules', label: 'Plan' },
             ].map(t => (
               <button key={t.key} onClick={() => setRightView(t.key)}
                 className={`flex-1 py-2.5 text-xs font-bold transition-colors
@@ -460,8 +472,9 @@ export default function App() {
           </div>
           <div className="flex-1 overflow-y-auto">
             {rightView === 'rules'
-              ? <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0} />
-              : <SidePanel dateStr={selectedDay} ledger={ledger} lends={lends} onUpdate={refresh} />
+              ? <SettingsPanel onUpdate={refresh} debtFundBalance={todayData.debt ?? 0}
+                  funds={funds} onFundsChange={handleFundsChange} />
+              : <SidePanel dateStr={selectedDay} ledger={ledger} lends={lends} funds={funds} onUpdate={refresh} />
             }
           </div>
         </aside>
@@ -472,6 +485,7 @@ export default function App() {
         <FundModal
           fund={fundModal}
           ledger={ledger}
+          funds={funds}
           onClose={() => setFundModal(null)}
           onSaved={() => { setFundModal(null); refresh() }} />
       )}

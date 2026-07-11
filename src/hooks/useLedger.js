@@ -8,10 +8,14 @@ export function useLedger(year, month) {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const from = dayjs(new Date(year,month,1)).format('YYYY-MM-DD')
-    const to   = dayjs(new Date(year,month+1,0)).format('YYYY-MM-DD')
-    // Load from 3 months back so running balance is accurate
-    const realFrom = dayjs(new Date(year,month-3,1)).format('YYYY-MM-DD')
+    // Window always covers the viewed month AND today..today+7 (Today briefing)
+    const monthEnd   = dayjs(new Date(year, month + 1, 0))
+    const horizon    = dayjs().add(7, 'day')
+    const to         = (horizon.isAfter(monthEnd, 'day') ? horizon : monthEnd).format('YYYY-MM-DD')
+    // Load from 3 months back so running balance is accurate; never later than today's month
+    const base       = dayjs(new Date(year, month - 3, 1))
+    const todayMonth = dayjs().startOf('month')
+    const realFrom   = (todayMonth.isBefore(base) ? todayMonth : base).format('YYYY-MM-DD')
     const data = await api.getLedger(realFrom, to)
     setLedger(data)
     setLoading(false)

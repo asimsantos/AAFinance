@@ -1,12 +1,9 @@
 import React from 'react'
 import dayjs from 'dayjs'
+import { fmt } from '../money'
+import { LEGEND } from '../eventTypes'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-
-function fmt(n) {
-  const abs = Math.abs(Math.round(n))
-  return (n < 0 ? '-$' : '$') + abs.toLocaleString('en-AU')
-}
 
 export default function Calendar({ year, month, ledger, selectedDay, onDayClick }) {
   const today    = dayjs().format('YYYY-MM-DD')
@@ -26,6 +23,16 @@ export default function Calendar({ year, month, ledger, selectedDay, onDayClick 
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col select-none">
+
+      {/* Legend */}
+      <div className="flex items-center gap-x-3 gap-y-1 flex-wrap mb-1.5 px-0.5 flex-shrink-0">
+        {LEGEND.map(l => (
+          <span key={l.label} className="flex items-center gap-1 text-[9px] font-semibold text-slate-500">
+            <span className={`w-[5px] h-[5px] rounded-full ${l.color}`} />{l.label}
+          </span>
+        ))}
+        <span className="ml-auto text-[9px] font-semibold text-slate-500">bottom figure = cash at close</span>
+      </div>
 
       {/* Day-of-week headers */}
       <div className="grid grid-cols-7 gap-1.5 mb-1.5 flex-shrink-0">
@@ -94,23 +101,30 @@ export default function Calendar({ year, month, ledger, selectedDay, onDayClick 
 
               {/* Row 2: event name labels — hidden on mobile, visible on sm+ */}
               <div className="flex-1 hidden sm:flex flex-col gap-[2px] overflow-hidden">
-                {events.filter(e => e.type !== 'autocover' && e.type !== 'autocoverrepay').slice(0, 3).map((ev, j) => (
-                  <div key={j}
-                    className={`text-[8px] rounded-[3px] px-1 py-[1px] font-semibold truncate leading-tight flex-shrink-0
-                      ${ev.type === 'income'  ? 'bg-emerald-100 text-emerald-800' :
-                        ev.type === 'borrow'  ? 'bg-orange-100 text-orange-800' :
-                        ev.type === 'expense' && ev.amt > 1000 ? 'bg-red-600 text-white' :
-                        ev.type === 'expense' ? 'bg-red-100 text-red-700' :
-                        ev.type === 'fund'    ? 'bg-blue-100 text-blue-700' :
-                                                'bg-violet-100 text-violet-700'}`}>
-                    {ev.name}
-                  </div>
-                ))}
-                {events.filter(e => e.type !== 'autocover' && e.type !== 'autocoverrepay').length > 3 && (
-                  <span className="text-[7px] text-slate-400 pl-0.5 hidden sm:inline">
-                    +{events.filter(e => e.type !== 'autocover' && e.type !== 'autocoverrepay').length - 3} more
-                  </span>
-                )}
+                {(() => {
+                  const visible = events.filter(e => e.type !== 'autocover' && e.type !== 'autocoverrepay')
+                  return (
+                    <>
+                      {visible.slice(0, 2).map((ev, j) => (
+                        <div key={j}
+                          className={`text-[11px] rounded-[3px] px-1 py-[1px] font-semibold truncate leading-tight flex-shrink-0
+                            ${ev.type === 'income'  ? 'bg-emerald-100 text-emerald-800' :
+                              ev.type === 'borrow'  ? 'bg-orange-100 text-orange-800' :
+                              ev.type === 'expense' && ev.amt > 1000 ? 'bg-red-600 text-white' :
+                              ev.type === 'expense' ? 'bg-red-100 text-red-700' :
+                              ev.type === 'fund'    ? 'bg-blue-100 text-blue-700' :
+                                                      'bg-violet-100 text-violet-700'}`}>
+                          {(ev.type === 'income' || ev.type === 'borrow') ? '+' : '−'} {ev.name}
+                        </div>
+                      ))}
+                      {visible.length > 2 && (
+                        <span className="text-[9px] text-slate-400 pl-0.5 hidden sm:inline">
+                          +{visible.length - 2} more
+                        </span>
+                      )}
+                    </>
+                  )
+                })()}
               </div>
 
               {/* Row 3: cash balance — always visible */}

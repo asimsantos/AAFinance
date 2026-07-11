@@ -1,26 +1,11 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import dayjs from 'dayjs'
 import { api } from '../api'
+import { fmt } from '../money'
+import { EVENT_TYPES } from '../eventTypes'
+import { fundLabel as fundLabelOf } from '../fundStyle'
 
-const TYPE_CFG = {
-  income:        { label: 'Income',   sign: '+', color: '#065F46', dot: 'bg-emerald-500' },
-  expense:       { label: 'Expense',  sign: '-', color: '#B91C1C', dot: 'bg-red-400' },
-  fund:          { label: 'Fund',     sign: '-', color: '#1D4ED8', dot: 'bg-blue-400' },
-  lend:          { label: 'Lend',     sign: '-', color: '#6D28D9', dot: 'bg-violet-400' },
-  borrow:        { label: 'Borrow',   sign: '+', color: '#9A3412', dot: 'bg-orange-500' },
-  autocover:     { label: 'Cover',    sign: '-', color: '#92400E', dot: 'bg-amber-500' },
-  autocoverrepay:{ label: 'Repay',    sign: '+', color: '#0F766E', dot: 'bg-teal-500' },
-  debtpay:       { label: 'Debt pay', sign: '-', color: '#1E40AF', dot: 'bg-blue-600' },
-}
 
-const FUND_OPTIONS = [
-  { value: 'car',       label: 'Car' },
-  { value: 'emergency', label: 'Emergency' },
-  { value: 'debt',      label: 'Debt' },
-  { value: 'home',      label: 'Tuition reserve' },
-]
-
-const FUND_LABEL = { car: 'Car', emergency: 'Emergency', debt: 'Debt', home: 'Tuition reserve' }
 const RECUR_OPTIONS = [
   { value: 'once',        label: 'One time' },
   { value: 'weekly',      label: 'Weekly' },
@@ -34,16 +19,12 @@ const SCOPE_OPTIONS = [
   { value: 'all',  label: 'All occurrences' },
 ]
 
-function fmt(n) {
-  return '$' + Math.abs(Math.round(n)).toLocaleString('en-AU')
-}
-
 const inp = 'w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-emerald-400 bg-white'
 
 // ── Transaction create / edit form ────────────────────────────────
-function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
+function TxForm({ dateStr, editEvent, editRuleId, activeFunds = [], onSaved, onCancel }) {
   const isEdit     = !!editEvent
-  const isRuleEdit = isEdit && editEvent.source === 'rule'
+  const isRuleEdit = isEdit && editEvent.origin === 'rule'
 
   const [type,       setType]       = useState(editEvent?.type        || 'expense')
   const [name,       setName]       = useState(editEvent?.name        || '')
@@ -51,7 +32,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
   const [date,       setDate]       = useState(dateStr                || dayjs().format('YYYY-MM-DD'))
   const [recur,      setRecur]      = useState(editEvent?.recur       || 'once')
   const [endDate,    setEndDate]    = useState(editEvent?.end_date    || '')
-  const [fundTarget, setFundTarget] = useState(editEvent?.fund_target || 'car')
+  const [fundTarget, setFundTarget] = useState(editEvent?.fund_target || activeFunds[0]?.key || '')
   const [sourceFund, setSourceFund] = useState(editEvent?.source_fund || '')
   const [returnDate] = useState(editEvent?.return_date || '')
   const [scope,      setScope]      = useState('once')
@@ -104,7 +85,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
             return_date: returnDate || '',
           })
         }
-      } else if (isEdit && editEvent.source === 'tx') {
+      } else if (isEdit && editEvent.origin === 'tx') {
         await api.updateTransaction(editEvent.id, {
           type, name, amt: a, date,
           fund_target: type === 'fund' ? (fundTarget || '') : '',
@@ -173,14 +154,14 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
 
       {type === 'fund' && (
         <select className={inp} value={fundTarget} onChange={e => setFundTarget(e.target.value)}>
-          {FUND_OPTIONS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+          {activeFunds.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
         </select>
       )}
 
       {type === 'expense' && (
         <select className={inp} value={sourceFund} onChange={e => setSourceFund(e.target.value)}>
           <option value="">Deduct from cash (default)</option>
-          {FUND_OPTIONS.map(f => <option key={f.value} value={f.value}>Deduct from {f.label} first</option>)}
+          {activeFunds.map(f => <option key={f.key} value={f.key}>Deduct from {f.label} first</option>)}
         </select>
       )}
 
@@ -218,7 +199,7 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
         </div>
       )}
 
-      <div className="flex gap-2 pt-0.5">
+      <div className="flex gap-2 pt-2 sticky bottom-0 bg-slate-50 pb-1">
         <button onClick={onCancel}
           className="px-3 py-2 rounded-lg text-xs font-semibold text-slate-500 bg-white border border-slate-200 hover:bg-slate-50">
           Cancel
@@ -239,10 +220,49 @@ function TxForm({ dateStr, editEvent, editRuleId, onSaved, onCancel }) {
   )
 }
 
+// ── One-line quick add: amount + name, defaults Out / selected day ─
+function QuickAdd({ dateStr, onSaved }) {
+  const [amt,    setAmt]    = useState('')
+  const [name,   setName]   = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const add = async () => {
+    const a = parseFloat(amt)
+    if (!a || !name.trim()) return
+    setSaving(true)
+    try {
+      await api.addTransaction({ type: 'expense', name: name.trim(), amt: a, date: dateStr, fund_target: '' })
+      setAmt(''); setName(''); onSaved()
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="flex gap-1.5">
+      <input className="w-24 flex-shrink-0 px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-emerald-400 bg-white"
+        type="number" inputMode="decimal" placeholder="$"
+        value={amt} onChange={e => setAmt(e.target.value)} />
+      <input className={inp} placeholder="Quick add (Out)" value={name}
+        onChange={e => setName(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') add() }} />
+      <button onClick={add} disabled={saving || !parseFloat(amt) || !name.trim()}
+        className="px-3 rounded-lg text-xs font-bold text-white disabled:opacity-40 flex-shrink-0"
+        style={{ background: '#DC2626' }}>
+        Add
+      </button>
+    </div>
+  )
+}
+
 // ── Main side panel ───────────────────────────────────────────────
-export default function SidePanel({ dateStr, ledger, onUpdate }) {
+export default function SidePanel({ dateStr, ledger, onUpdate, funds = [], isSheet = false, onFormOpenChange }) {
   const [adding,    setAdding]    = useState(false)
   const [editEvent, setEditEvent] = useState(null)
+
+  const activeFunds = funds.filter(f => !f.archived)
+  const fundLabel   = key => fundLabelOf(funds, key)
+
+  const formOpen = adding || !!editEvent
+  useEffect(() => { onFormOpenChange?.(formOpen) }, [formOpen])
 
   if (!dateStr) return (
     <div className="flex items-center justify-center h-full text-sm text-slate-400 p-6 text-center">
@@ -274,15 +294,17 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
     return s
   }, 0)
   const displayClose   = openCash !== null ? openCash + netFromEvents : null
-  const pinnedClose    = ld.cash_pinned ? (ld.cash ?? null) : null   // actual carry-forward when different
-  const showPinnedNote = pinnedClose !== null && Math.round(pinnedClose) !== Math.round(displayClose ?? 0)
+  // Actual carry-forward when a snapshot anchors (or pins) cash to a
+  // different value than the event math produces
+  const anchorClose    = ld.cash_anchored ? (ld.cash ?? null) : null
+  const showAnchorNote = anchorClose !== null && Math.round(anchorClose) !== Math.round(displayClose ?? 0)
 
   return (
     <div className="flex flex-col h-full">
 
       {/* Date header */}
       <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 flex-shrink-0">
-        <p className="font-bold text-slate-800 text-sm leading-tight">{d.format('dddd, D MMMM YYYY')}</p>
+        {!isSheet && <p className="font-bold text-slate-800 text-sm leading-tight">{d.format('dddd, D MMMM YYYY')}</p>}
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
           {isFuture && <p className="text-[10px] text-slate-400">Projected</p>}
           {ld.reconciled && (
@@ -302,7 +324,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
           )}
         </div>
 
-        {hasData && (
+        {hasData && !(isSheet && formOpen) && (
           <div className="mt-2.5 rounded-lg border border-slate-200 bg-white overflow-hidden">
             {[
               { label: 'Open',     value: openCash,     color: (openCash??0) < 0 ? 'text-red-600' : 'text-slate-700', prefix: (openCash??0) < 0 ? '-$' : '$',       bold: false },
@@ -321,11 +343,11 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
                 </span>
               </div>
             ))}
-            {showPinnedNote && (
+            {showAnchorNote && (
               <div className="flex justify-between items-center px-3 py-1 bg-amber-50 border-t border-amber-100">
-                <span className="text-[9px] text-amber-600">Carry-forward pinned to</span>
+                <span className="text-[9px] text-amber-600">{ld.cash_pinned ? 'Carry-forward pinned to' : 'Anchored to'}</span>
                 <span className="text-[10px] font-bold text-amber-700">
-                  {(pinnedClose??0) < 0 ? '-$' : '$'}{Math.abs(Math.round(pinnedClose??0)).toLocaleString('en-AU')}
+                  {(anchorClose??0) < 0 ? '-$' : '$'}{Math.abs(Math.round(anchorClose??0)).toLocaleString('en-AU')}
                 </span>
               </div>
             )}
@@ -335,6 +357,11 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+
+        {/* Quick add — sheet only */}
+        {isSheet && !adding && !editEvent && (
+          <QuickAdd dateStr={dateStr} onSaved={handleSaved} />
+        )}
 
         {/* Add transaction button */}
         {!adding && !editEvent && (
@@ -349,6 +376,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
           <TxForm
             dateStr={dateStr}
             editEvent={null}
+            activeFunds={activeFunds}
             onSaved={handleSaved}
             onCancel={handleCancel} />
         )}
@@ -357,7 +385,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
         {events.length === 0 && !adding ? (
           <p className="text-center text-slate-400 text-sm py-8">No transactions on this day</p>
         ) : events.map((ev, i) => {
-          const cfg       = TYPE_CFG[ev.type] || TYPE_CFG.expense
+          const cfg       = EVENT_TYPES[ev.type] || EVENT_TYPES.expense
           const isIncome  = ev.type === 'income' || ev.type === 'borrow'
           const isCover   = ev.type === 'autocover'
           const isRepay   = ev.type === 'autocoverrepay'
@@ -419,6 +447,7 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
                   dateStr={dateStr}
                   editEvent={ev}
                   editRuleId={ev.rule_id || null}
+                  activeFunds={activeFunds}
                   onSaved={handleSaved}
                   onCancel={handleCancel} />
               ) : (
@@ -428,11 +457,11 @@ export default function SidePanel({ dateStr, ledger, onUpdate }) {
                   <span className={`w-2 h-2 rounded-full flex-shrink-0 ${cfg.dot}`} />
                   <div className="flex-1 min-w-0">
                     <p className="text-[13px] font-semibold text-slate-800 truncate">
-                      {ev.name}{ev.type === 'fund' && ev.fund_target ? ` → ${FUND_LABEL[ev.fund_target] || ev.fund_target}` : ''}
+                      {ev.name}{ev.type === 'fund' && ev.fund_target ? ` → ${fundLabel(ev.fund_target)}` : ''}
                     </p>
                     <p className="text-[10px] text-slate-400 mt-0.5">
-                      {ev.source === 'rule' ? `Recurring · ${ev.recur}` : ev.type === 'borrow' ? 'Borrowed' : 'One-off'}
-                      {ev.source_fund ? ` · from ${FUND_LABEL[ev.source_fund] || ev.source_fund}` : ''}
+                      {ev.origin === 'rule' ? `Recurring · ${ev.recur}` : ev.type === 'borrow' ? 'Borrowed' : 'One-off'}
+                      {ev.source_fund ? ` · from ${fundLabel(ev.source_fund)}` : ''}
                       {isFuture ? ' · projected' : ''}
                     </p>
                   </div>

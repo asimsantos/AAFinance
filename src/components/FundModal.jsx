@@ -2,10 +2,12 @@ import React, { useState } from 'react'
 import dayjs from 'dayjs'
 import { api } from '../api'
 
-export default function FundModal({ fund, ledger, onClose, onSaved }) {
+export default function FundModal({ fund, ledger, funds = [], onClose, onSaved }) {
   const today   = dayjs().format('YYYY-MM-DD')
   const todayLd = ledger[today] || {}
-  const [val,        setVal]        = useState(String(Math.round(fund.value)))
+  const [val,        setVal]        = useState(
+    todayLd[fund.key] != null ? String(Math.round(todayLd[fund.key])) : ''
+  )
   const [pinned,     setPinned]     = useState(!!(todayLd.cash_pinned))
   const [reconcile,  setReconcile]  = useState(false)
   const [saving,     setSaving]     = useState(false)
@@ -17,25 +19,22 @@ export default function FundModal({ fund, ledger, onClose, onSaved }) {
     const numVal = parseFloat(val) || 0
     try {
       if (reconcile) {
-        // Full snapshot: anchor ALL funds to today's computed values, mark reconciled
+        // Full snapshot: anchor cash + every fund (archived included, so
+        // their balances can't drift unanchored) to today's values.
         await api.upsertSnapshot({
-          date:      today,
-          cash:      isCash ? numVal : (todayLd.cash      ?? 0),
-          car:       fund.key === 'car'       ? numVal : (todayLd.car       ?? 0),
-          emergency: fund.key === 'emergency' ? numVal : (todayLd.emergency ?? 0),
-          debt:      fund.key === 'debt'      ? numVal : (todayLd.debt      ?? 0),
-          home:      fund.key === 'home'      ? numVal : (todayLd.home      ?? 0),
+          date: today,
+          cash: isCash ? numVal : (todayLd.cash ?? 0),
+          balances: Object.fromEntries(funds.map(f =>
+            [f.key, f.key === fund.key ? numVal : (todayLd[f.key] ?? 0)])),
           cash_pinned: pinned,
           reconciled: true,
         })
+      } else if (isCash) {
+        // Partial snapshot: cash only
+        await api.upsertSnapshot({ date: today, cash: numVal, cash_pinned: pinned })
       } else {
-        // Partial snapshot: only update this one fund
-        await api.upsertSnapshot({
-          date:     today,
-          [fund.key]: numVal,
-          fund_key: fund.key,
-          ...(isCash ? { cash_pinned: pinned } : {}),
-        })
+        // Partial snapshot: only this one fund
+        await api.upsertSnapshot({ date: today, balances: { [fund.key]: numVal } })
       }
       onSaved()
     } finally { setSaving(false) }
@@ -85,7 +84,10 @@ export default function FundModal({ fund, ledger, onClose, onSaved }) {
           onClick={() => setReconcile(r => !r)}
           className={`w-full mb-4 px-3 py-2.5 rounded-xl border text-left flex items-center gap-3 transition-colors
             ${reconcile ? 'bg-teal-50 border-teal-300' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'}`}>
-          <span className="text-base flex-shrink-0">{reconcile ? '✅' : '☑️'}</span>
+          <span className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 text-[12px] font-bold transition-colors
+            ${reconcile ? 'bg-teal-600 border-teal-600 text-white' : 'bg-white border-slate-300 text-transparent'}`}>
+            ✓
+          </span>
           <div>
             <p className={`text-[13px] font-bold ${reconcile ? 'text-teal-800' : 'text-slate-600'}`}>
               {reconcile ? 'Reconciled — all funds anchored' : 'Mark day as reconciled'}

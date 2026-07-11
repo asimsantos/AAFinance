@@ -1,5 +1,8 @@
 import express from 'express'
 import cors from 'cors'
+import { computeLedger } from './engine.js'
+import { migrate } from './migrate.js'
+import { rows } from './db.js'
 import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -33,12 +36,7 @@ function run(sql, params = []) {
 }
 
 function all(sql, params = []) {
-  const stmt = db.prepare(sql)
-  stmt.bind(params)
-  const rows = []
-  while (stmt.step()) rows.push(stmt.getAsObject())
-  stmt.free()
-  return rows
+  return rows(db, sql, params)
 }
 
 function get(sql, params = []) {
@@ -166,247 +164,15 @@ if (!existing || existing.c === 0) {
   console.log('✅ Database seeded with demo data')
 }
 
+// ── FUNDS MIGRATION (one-shot, backs up the db file first) ──────
+const migration = migrate(db, { dbPath: DB_PATH, backupsDir: join(DATA_DIR, 'backups') })
+if (migration.ran) {
+  persist()
+  console.log(`✅ Migrated to funds schema${migration.backupPath ? ` (backup: ${migration.backupPath})` : ''}`)
+}
+
 // ── HELPERS ─────────────────────────────────────────────────────
 function uid() { return Math.random().toString(36).slice(2,10) }
-
-// ── LEDGER ENGINE ───────────────────────────────────────────────
-function computeLedger(from, to) {
-  const rules   = all('SELECT * FROM rules')
-  const allTxns = all('SELECT * FROM transactions')
-  const snaps   = all('SELECT * FROM snapshots ORDER BY date')
-
-  const baseSnap = snaps.filter(s => s.date <= from).sort((a,b) => b.date.localeCompare(a.date))[0]
-    || { cash:0, car:0, emergency:0, debt:0, home:0 }
-
-  // Determine the earliest date we must loop from so no events are ever dropped
-  // between the last known balance and the requested period.
-  //
-  // Case A — a snapshot exists before 'from': start the loop from that snapshot
-  //   date so every rule firing and transaction between snapshot→from is applied
-  //   (e.g. debt payments made in months that fall outside the 3-month lookback).
-  //
-  // Case B — no prior snapshot: anchor to the first in-range snapshot to avoid
-  //   balance values jumping from zero when the snapshot appears mid-loop.
-  let loopFrom = from
-  if (baseSnap.date) {
-    loopFrom = baseSnap.date
-  } else {
-    const firstInRange = snaps.filter(s => s.date >= from && s.date <= to)
-      .sort((a, b) => a.date.localeCompare(b.date))[0]
-    if (firstInRange) loopFrom = firstInRange.date
-  }
-
-  // Fetch transactions for the full computation window (loopFrom → to)
-  const txns = all('SELECT * FROM transactions WHERE date>=? AND date<=?', [loopFrom, to])
-
-  const overrides = new Set(allTxns.filter(t => t.rule_id && !t.skip).map(t => `${t.rule_id}_${t.date}`))
-  const skips     = new Set(allTxns.filter(t => t.skip).map(t => `${t.rule_id}_${t.date}`))
-
-  function ruleFiresOn(rule, dateStr) {
-    if (dateStr < rule.start_date) return false
-    if (rule.end_date && dateStr > rule.end_date) return false
-    const start  = new Date(rule.start_date + 'T12:00:00')
-    const target = new Date(dateStr + 'T12:00:00')
-    const diff   = Math.round((target - start) / 86400000)
-    if (diff < 0) return false
-    switch (rule.recur) {
-      case 'once':        return dateStr === rule.start_date
-      case 'daily':       return true
-      case 'weekly':      return diff % 7 === 0
-      case 'fortnightly': return diff % 14 === 0
-      case 'monthly':     return target.getDate() === start.getDate()
-      case 'yearly':      return target.getDate() === start.getDate() && target.getMonth() === start.getMonth()
-      default:            return false
-    }
-  }
-
-  let cash = baseSnap.cash, car = baseSnap.car,
-      emergency = baseSnap.emergency, debt = baseSnap.debt, home = baseSnap.home
-
-  // Track how much each fund has lent to cash via auto-cover so it can be repaid.
-  let autocoverOwed = { emergency: 0, debt: 0, home: 0, car: 0 }
-
-  const ledger = {}
-  const d = new Date(loopFrom + 'T12:00:00')
-  const end = new Date(to + 'T12:00:00')
-
-  while (d <= end) {
-    const ds = d.toISOString().slice(0, 10)
-
-    // Apply snapshot for this exact date.
-    // partial_funds: comma-separated list of funds set by this snapshot.
-    // An empty partial_funds means all funds are anchored (full snapshot).
-    const daySnap = snaps.find(s => s.date === ds)
-    if (daySnap) {
-      const partial = daySnap.partial_funds ? daySnap.partial_funds.split(',').filter(Boolean) : []
-      const full = partial.length === 0
-      if (full || partial.includes('cash'))      cash      = daySnap.cash
-      if (full || partial.includes('car'))       car       = daySnap.car
-      if (full || partial.includes('emergency')) emergency = daySnap.emergency
-      if (full || partial.includes('debt'))      debt      = daySnap.debt
-      if (full || partial.includes('home'))      home      = daySnap.home
-      // A full snapshot represents ground-truth — reset any outstanding auto-cover debt
-      if (full) autocoverOwed = { emergency: 0, debt: 0, home: 0, car: 0 }
-    }
-
-    const openCash = cash   // cash before today's events
-
-    const events = []
-
-    // One-off transactions for this date
-    txns.filter(t => t.date === ds && !t.skip).forEach(t =>
-      events.push({ ...t, source: 'tx' })
-    )
-
-    // Recurring rules
-    rules.forEach(rule => {
-      if (skips.has(`${rule.id}_${ds}`)) return
-      if (overrides.has(`${rule.id}_${ds}`)) return
-      if (ruleFiresOn(rule, ds)) {
-        events.push({
-          id: `rule_${rule.id}_${ds}`, rule_id: rule.id,
-          type: rule.type, name: rule.name, amt: rule.amt,
-          date: ds, fund_target: rule.fund_target,
-          source_fund: rule.source_fund || '',
-          recur: rule.recur, source: 'rule'
-        })
-      }
-    })
-
-    // Apply events to balances
-    events.forEach(ev => {
-      if (ev.type === 'income') {
-        cash += ev.amt
-      } else if (ev.type === 'expense') {
-        // If a source fund is nominated, draw from it first then spill to cash
-        if (ev.source_fund) {
-          let remaining = ev.amt
-          const deductFrom = (key) => {
-            const bal = { car, emergency, debt, home }[key] || 0
-            const take = Math.min(bal, remaining)
-            if (take > 0) {
-              if (key === 'car')       car       -= take
-              if (key === 'emergency') emergency -= take
-              if (key === 'debt')      debt      -= take
-              if (key === 'home')      home      -= take
-              remaining -= take
-            }
-          }
-          deductFrom(ev.source_fund)
-          cash -= remaining   // remainder (can be 0 if fund covered it all)
-        } else {
-          cash -= ev.amt
-        }
-      } else if (ev.type === 'borrow') {
-        cash += ev.amt                               // cash in; debt fund unaffected
-      } else if (ev.type === 'fund') {
-        cash -= ev.amt
-        if      (ev.fund_target === 'car')       car += ev.amt
-        else if (ev.fund_target === 'emergency') emergency += ev.amt
-        else if (ev.fund_target === 'debt')      debt += ev.amt   // accumulates (like car/emergency)
-        else if (ev.fund_target === 'home')      home += ev.amt
-      } else if (ev.type === 'lend') {
-        cash -= ev.amt
-      } else if (ev.type === 'debtpay') {
-        debt -= ev.amt                               // payment from debt fund to creditor
-      }
-    })
-
-    // If cash is pinned on this snapshot, override any event-computed value
-    if (daySnap?.cash_pinned) cash = daySnap.cash
-
-    // Auto-cover: when cash goes negative, draw from reserves in priority order:
-    //   1. Emergency  2. Debt fund  3. Tuition reserve  4. Car fund
-    if (cash < 0 && !daySnap?.cash_pinned) {
-      const fromEmergency = Math.min(emergency, -cash)
-      if (fromEmergency > 0) {
-        emergency -= fromEmergency; cash += fromEmergency
-        autocoverOwed.emergency += fromEmergency
-        events.push({ id: `ac_em_${ds}`, type: 'autocover', name: 'Emergency fund', amt: fromEmergency, fund_target: 'emergency', date: ds, source: 'autocover' })
-      }
-      if (cash < 0) {
-        const fromDebt = Math.min(debt, -cash)
-        if (fromDebt > 0) {
-          debt -= fromDebt; cash += fromDebt
-          autocoverOwed.debt += fromDebt
-          events.push({ id: `ac_debt_${ds}`, type: 'autocover', name: 'Debt fund', amt: fromDebt, fund_target: 'debt', date: ds, source: 'autocover' })
-        }
-      }
-      if (cash < 0) {
-        const fromHome = Math.min(home, -cash)
-        if (fromHome > 0) {
-          home -= fromHome; cash += fromHome
-          autocoverOwed.home += fromHome
-          events.push({ id: `ac_home_${ds}`, type: 'autocover', name: 'Tuition reserve', amt: fromHome, fund_target: 'home', date: ds, source: 'autocover' })
-        }
-      }
-      if (cash < 0) {
-        const fromCar = Math.min(car, -cash)
-        if (fromCar > 0) {
-          car -= fromCar; cash += fromCar
-          autocoverOwed.car += fromCar
-          events.push({ id: `ac_car_${ds}`, type: 'autocover', name: 'Car fund', amt: fromCar, fund_target: 'car', date: ds, source: 'autocover' })
-        }
-      }
-    }
-
-    // Auto-cover recovery: repay in reverse draw order (Car → Home → Debt → Emergency)
-    if (cash > 0 && !daySnap?.cash_pinned &&
-        (autocoverOwed.emergency > 0 || autocoverOwed.debt > 0 || autocoverOwed.home > 0 || autocoverOwed.car > 0)) {
-      const repayCar = Math.min(autocoverOwed.car, cash)
-      if (repayCar > 0) {
-        car += repayCar; cash -= repayCar; autocoverOwed.car -= repayCar
-        events.push({ id: `acr_car_${ds}`, type: 'autocoverrepay', name: 'Car fund', amt: repayCar, fund_target: 'car', date: ds, source: 'autocover' })
-      }
-      if (cash > 0) {
-        const repayHome = Math.min(autocoverOwed.home, cash)
-        if (repayHome > 0) {
-          home += repayHome; cash -= repayHome; autocoverOwed.home -= repayHome
-          events.push({ id: `acr_home_${ds}`, type: 'autocoverrepay', name: 'Tuition reserve', amt: repayHome, fund_target: 'home', date: ds, source: 'autocover' })
-        }
-      }
-      if (cash > 0) {
-        const repayDebt = Math.min(autocoverOwed.debt, cash)
-        if (repayDebt > 0) {
-          debt += repayDebt; cash -= repayDebt; autocoverOwed.debt -= repayDebt
-          events.push({ id: `acr_debt_${ds}`, type: 'autocoverrepay', name: 'Debt fund', amt: repayDebt, fund_target: 'debt', date: ds, source: 'autocover' })
-        }
-      }
-      if (cash > 0) {
-        const repayEm = Math.min(autocoverOwed.emergency, cash)
-        if (repayEm > 0) {
-          emergency += repayEm; cash -= repayEm; autocoverOwed.emergency -= repayEm
-          events.push({ id: `acr_em_${ds}`, type: 'autocoverrepay', name: 'Emergency fund', amt: repayEm, fund_target: 'emergency', date: ds, source: 'autocover' })
-        }
-      }
-    }
-
-    // daySpend: actual money leaving the household (expenses + lends)
-    // dayTransfer: money moved into own funds (fund events)
-    // borrow is a cash inflow — included in dayIn alongside income
-    const dayIn       = events.filter(e => e.type === 'income' || e.type === 'borrow').reduce((s, e) => s + e.amt, 0)
-    const daySpend    = events.filter(e => e.type === 'expense' || e.type === 'lend').reduce((s, e) => s + e.amt, 0)
-    const dayTransfer = events.filter(e => e.type === 'fund').reduce((s, e) => s + e.amt, 0)
-
-    ledger[ds] = {
-      cash, car, emergency, debt, home,
-      openCash,
-      hasSnapshot:  !!daySnap,
-      cash_pinned:  !!(daySnap?.cash_pinned),
-      reconciled:   !!(daySnap?.reconciled),
-      autocoverOwed: { ...autocoverOwed },
-      events,
-      dayIn,
-      daySpend,
-      dayTransfer,
-      dayOut: daySpend + dayTransfer,
-    }
-
-    d.setDate(d.getDate() + 1)
-  }
-
-  return ledger
-}
 
 // ── EXPRESS ─────────────────────────────────────────────────────
 const app = express()
@@ -417,7 +183,86 @@ app.use(express.json())
 app.get('/api/ledger', (req, res) => {
   const { from, to } = req.query
   if (!from || !to) return res.status(400).json({ error: 'from and to required' })
-  res.json(computeLedger(from, to))
+  res.json(computeLedger({
+    from, to,
+    rules:            all('SELECT * FROM rules'),
+    transactions:     all('SELECT * FROM transactions'),
+    snapshots:        all('SELECT * FROM snapshots ORDER BY date'),
+    snapshotBalances: all('SELECT * FROM snapshot_balances'),
+    funds:            all('SELECT * FROM funds ORDER BY sort_order'),
+  }))
+})
+
+// Funds
+// Day objects spread fund balances by key, so keys may never collide
+// with the ledger's own fields.
+const RESERVED_FUND_KEYS = ['cash', 'openCash', 'events', 'dayIn', 'daySpend', 'dayTransfer', 'dayOut', 'hasSnapshot', 'cash_anchored', 'cash_pinned', 'reconciled', 'autocoverOwed']
+
+function fundReferenced(id, key) {
+  return !!(
+    get('SELECT 1 x FROM rules WHERE fund_target=? OR source_fund=? LIMIT 1', [key, key]) ||
+    get('SELECT 1 x FROM transactions WHERE fund_target=? OR source_fund=? LIMIT 1', [key, key]) ||
+    get('SELECT 1 x FROM snapshot_balances WHERE fund_id=? LIMIT 1', [id])
+  )
+}
+
+function slugKey(label) {
+  let base = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'fund'
+  if (RESERVED_FUND_KEYS.includes(base)) base = base + '_fund'
+  let key = base, i = 2
+  while (get('SELECT 1 x FROM funds WHERE key=?', [key])) key = `${base}_${i++}`
+  return key
+}
+
+app.get('/api/funds', (_, res) => {
+  const funds = all('SELECT * FROM funds ORDER BY sort_order')
+  // Grouped reference lookup — constant query count regardless of fund count
+  const refKeys = new Set(all(`
+    SELECT fund_target k FROM rules        WHERE fund_target != ''
+    UNION SELECT source_fund FROM rules        WHERE source_fund != ''
+    UNION SELECT fund_target FROM transactions WHERE fund_target != ''
+    UNION SELECT source_fund FROM transactions WHERE source_fund != ''
+  `).map(r => r.k))
+  const refIds = new Set(all('SELECT DISTINCT fund_id i FROM snapshot_balances').map(r => r.i))
+  res.json(funds.map(f => ({ ...f, referenced: (refKeys.has(f.key) || refIds.has(f.id)) ? 1 : 0 })))
+})
+app.post('/api/funds', (req, res) => {
+  const { label, color, target, autocover_priority } = req.body
+  if (!label || !String(label).trim()) return res.status(400).json({ error: 'label required' })
+  const key = slugKey(label)
+  const id = uid()
+  const maxSort = get('SELECT MAX(sort_order) m FROM funds')?.m
+  run('INSERT INTO funds(id,key,label,color,sort_order,autocover_priority,target,archived) VALUES(?,?,?,?,?,?,?,0)',
+    [id, key, String(label).trim(), color || '#1D4ED8', (maxSort ?? -1) + 1, autocover_priority ?? null, target ?? null])
+  res.json({ id, key })
+})
+app.put('/api/funds/:id', (req, res) => {
+  const f = get('SELECT * FROM funds WHERE id=?', [req.params.id])
+  if (!f) return res.status(404).json({ error: 'fund not found' })
+  const { label, color, target, autocover_priority, archived } = req.body
+  run('UPDATE funds SET label=?,color=?,target=?,autocover_priority=?,archived=? WHERE id=?',
+    [label ?? f.label, color ?? f.color,
+     target === undefined ? f.target : target,
+     autocover_priority === undefined ? f.autocover_priority : autocover_priority,
+     archived === undefined ? f.archived : (archived ? 1 : 0),
+     req.params.id])
+  res.json({ ok: true })
+})
+app.post('/api/funds/reorder', (req, res) => {
+  const { ids } = req.body
+  if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids array required' })
+  ids.forEach((id, i) => db.run('UPDATE funds SET sort_order=? WHERE id=?', [i, id]))
+  persist()
+  res.json({ ok: true })
+})
+app.delete('/api/funds/:id', (req, res) => {
+  const f = get('SELECT * FROM funds WHERE id=?', [req.params.id])
+  if (!f) return res.status(404).json({ error: 'fund not found' })
+  if (fundReferenced(f.id, f.key)) {
+    return res.status(409).json({ error: 'Fund is referenced by rules, transactions or snapshots — archive it instead.' })
+  }
+  run('DELETE FROM funds WHERE id=?', [req.params.id])
+  res.json({ ok: true })
 })
 
 // Rules
@@ -467,42 +312,56 @@ app.delete('/api/transactions/:id', (req, res) => {
 })
 
 // Snapshots
-app.get('/api/snapshots', (_, res) => res.json(all('SELECT * FROM snapshots ORDER BY date')))
+app.get('/api/snapshots', (_, res) => {
+  const snaps = all('SELECT * FROM snapshots ORDER BY date')
+  const keyById = Object.fromEntries(all('SELECT id,key FROM funds').map(f => [f.id, f.key]))
+  const grouped = {}
+  all('SELECT * FROM snapshot_balances').forEach(r => {
+    const k = keyById[r.fund_id]
+    if (k) (grouped[r.snapshot_id] ||= {})[k] = r.amount
+  })
+  res.json(snaps.map(s => ({ ...s, balances: grouped[s.id] || {} })))
+})
+// Upsert a snapshot for a date. `cash` present anchors cash (cash_set);
+// `balances` {fundKey: amount} anchors exactly those funds.
 app.post('/api/snapshots', (req, res) => {
-  const { date, cash, car, emergency, debt, home, cash_pinned, fund_key, reconciled } = req.body
-  const VALID_FUNDS = ['cash', 'car', 'emergency', 'debt', 'home']
+  const { date, cash, cash_pinned, reconciled, balances } = req.body
+  if (!date) return res.status(400).json({ error: 'date required' })
   const existing = get('SELECT * FROM snapshots WHERE date=?', [date])
-  const pinned = cash_pinned !== undefined ? (cash_pinned ? 1 : 0) : (existing?.cash_pinned ?? 0)
-  const rec = reconciled ? 1 : (existing?.reconciled ?? 0)
+  const pinned  = cash_pinned !== undefined ? (cash_pinned ? 1 : 0) : (existing?.cash_pinned ?? 0)
+  const rec     = reconciled ? 1 : (existing?.reconciled ?? 0)
+  const cashSet = cash !== undefined ? 1 : (existing?.cash_set ?? 0)
+  const cashVal = cash !== undefined ? cash : (existing?.cash ?? 0)
 
-  if (fund_key && VALID_FUNDS.includes(fund_key) && !reconciled) {
-    // Partial snapshot: only update the specific fund
-    if (existing) {
-      const partialSet = new Set((existing.partial_funds || '').split(',').filter(Boolean))
-      partialSet.add(fund_key)
-      const newPartial = [...partialSet].join(',')
-      run(`UPDATE snapshots SET ${fund_key}=?,partial_funds=?,cash_pinned=? WHERE date=?`,
-        [req.body[fund_key], newPartial, pinned, date])
-      res.json({ id: existing.id })
-    } else {
-      const id = uid()
-      run(`INSERT INTO snapshots(id,date,${fund_key},partial_funds,cash_pinned) VALUES(?,?,?,?,?)`,
-        [id, date, req.body[fund_key], fund_key, pinned])
-      res.json({ id })
-    }
+  let snapId = existing?.id
+  if (existing) {
+    db.run('UPDATE snapshots SET cash=?,cash_set=?,cash_pinned=?,reconciled=? WHERE date=?',
+      [cashVal, cashSet, pinned, rec, date])
   } else {
-    // Full snapshot (all funds provided, or reconcile action)
-    if (existing) {
-      run('UPDATE snapshots SET cash=?,car=?,emergency=?,debt=?,home=?,cash_pinned=?,partial_funds=?,reconciled=? WHERE date=?',
-        [cash,car,emergency,debt,home,pinned,'',rec,date])
-      res.json({ id: existing.id })
-    } else {
-      const id = uid()
-      run('INSERT INTO snapshots(id,date,cash,car,emergency,debt,home,cash_pinned,partial_funds,reconciled) VALUES(?,?,?,?,?,?,?,?,?,?)',
-        [id,date,cash,car,emergency,debt,home,pinned,'',rec])
-      res.json({ id })
-    }
+    snapId = uid()
+    db.run('INSERT INTO snapshots(id,date,cash,cash_set,cash_pinned,reconciled) VALUES(?,?,?,?,?,?)',
+      [snapId, date, cashVal, cashSet, pinned, rec])
   }
+
+  if (balances && typeof balances === 'object') {
+    const byKey = Object.fromEntries(all('SELECT id,key FROM funds').map(f => [f.key, f.id]))
+    Object.entries(balances).forEach(([key, amount]) => {
+      if (!byKey[key]) return
+      db.run('INSERT OR REPLACE INTO snapshot_balances(snapshot_id,fund_id,amount) VALUES(?,?,?)',
+        [snapId, byKey[key], Number(amount) || 0])
+    })
+  }
+
+  // Freeze fullness at write time: anchors cash + every currently-active
+  // fund → ground truth that resets auto-cover debt. Frozen here so later
+  // fund additions can't retroactively demote this snapshot.
+  const active = all('SELECT id FROM funds WHERE archived=0')
+  const have = new Set(all('SELECT fund_id FROM snapshot_balances WHERE snapshot_id=?', [snapId]).map(r => r.fund_id))
+  const isFull = (cashSet && active.every(f => have.has(f.id))) ? 1 : 0
+  db.run('UPDATE snapshots SET is_full=? WHERE id=?', [isFull, snapId])
+
+  persist()
+  res.json({ id: snapId })
 })
 
 // Debts (money borrowed — parallel to lends)
