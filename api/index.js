@@ -233,6 +233,47 @@ async function computeLedger(from, to) {
 
 // ── ROUTES ───────────────────────────────────────────────────────
 
+// Funds
+app.get('/api/funds', async (_, res) => {
+  try {
+    const funds = await sql`SELECT * FROM funds ORDER BY sort_order`
+    res.json(funds)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.post('/api/funds', async (req, res) => {
+  try {
+    const { label, color, target, autocover_priority } = req.body
+    if (!label?.trim()) return res.status(400).json({ error: 'label required' })
+    const key = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'fund'
+    const id = uid()
+    const [{ m }] = await sql`SELECT COALESCE(MAX(sort_order),-1) m FROM funds`
+    await sql`INSERT INTO funds(id,key,label,color,sort_order,autocover_priority,target,archived)
+      VALUES(${id},${key},${label.trim()},${color||'#1D4ED8'},${m+1},${autocover_priority??null},${target??null},0)`
+    res.json({ id, key })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.put('/api/funds/:id', async (req, res) => {
+  try {
+    const { label, color, target, autocover_priority, archived } = req.body
+    await sql`UPDATE funds SET label=${label},color=${color||'#1D4ED8'},target=${target??null},
+      autocover_priority=${autocover_priority??null},archived=${archived?1:0} WHERE id=${req.params.id}`
+    res.json({ ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.post('/api/funds/reorder', async (req, res) => {
+  try {
+    const { ids } = req.body
+    await Promise.all(ids.map((id, i) => sql`UPDATE funds SET sort_order=${i} WHERE id=${id}`))
+    res.json({ ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.delete('/api/funds/:id', async (req, res) => {
+  try {
+    await sql`DELETE FROM funds WHERE id=${req.params.id}`
+    res.json({ ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 // Ledger
 app.get('/api/ledger', async (req, res) => {
   const { from, to } = req.query
